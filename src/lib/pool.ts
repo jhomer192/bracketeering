@@ -1,12 +1,23 @@
-// Build the 128-track candidate pool per spec:
-//   Layer 1 — recent (target 64): short_term top + recently-played high-replay
-//   Layer 2 — all-time (target 64): long_term top + early-saved tracks
-//   Layer 3 — genre fill (only if 1+2 short)
-//   Layer 4 — graceful degradation (run with whatever pool we got)
+// Build the 128-track candidate pool:
+//   Layer 1 — short_term top (last 4 weeks)
+//   Layer 2 — medium_term top (last 6 months) ← best signal for "current favorites"
+//   Layer 3 — recently_played replays (≥2 plays in last 50)
+//   Layer 4 — saved library (newest saves first — Spotify's default order)
+//   Layer 5 — long_term top (flaky for many users, kept as backstop)
+//   Layer 6 — genre fill (only if everything above is short)
+// long_term is demoted because Spotify's algorithm there can surface tracks
+// you barely played — medium_term + saved-library are stronger taste signals.
 
 import { spotifyFetch, type SpotifyTrack, type SpotifyArtist } from "./spotify";
 
-export type PoolSource = "short_term" | "recently_played" | "long_term" | "saved_early" | "genre_fill" | "manual";
+export type PoolSource =
+  | "short_term"
+  | "medium_term"
+  | "recently_played"
+  | "long_term"
+  | "saved_early"
+  | "genre_fill"
+  | "manual";
 
 export type PoolEntry = SpotifyTrack & {
   source: PoolSource;
@@ -14,7 +25,6 @@ export type PoolEntry = SpotifyTrack & {
 
 const TARGET = 128;
 const RECENT_TARGET = 64;
-const ALLTIME_TARGET = 64;
 
 export async function buildPool(): Promise<{
   pool: PoolEntry[];
@@ -31,17 +41,25 @@ export async function buildPool(): Promise<{
     }
   };
 
-  // ---------- Layer 1 ----------
+  // ---------- Layer 1 — short_term top (last 4 weeks) ----------
   const shortTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
     "/me/top/tracks?time_range=short_term&limit=50"
   );
   tag(shortTerm.items, "short_term");
 
+  // ---------- Layer 2 — medium_term top (last 6 months) ----------
+  // This is usually the best "current favorites" signal — recent enough to
+  // reflect actual taste, long enough to be stable.
+  const mediumTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
+    "/me/top/tracks?time_range=medium_term&limit=50"
+  );
+  tag(mediumTerm.items, "medium_term");
+
+  // ---------- Layer 3 — recently played replays (only if recent slate light) ----------
   if (countSources(out, ["short_term", "recently_played"]) < RECENT_TARGET) {
     const recent = await spotifyFetch<{ items: Array<{ track: SpotifyTrack }> }>(
       "/me/player/recently-played?limit=50"
     );
-    // Group by track.id, count plays, prefer high-replay tracks
     const counts = new Map<string, { track: SpotifyTrack; count: number }>();
     for (const item of recent.items ?? []) {
       const t = item.track;
@@ -57,19 +75,36 @@ export async function buildPool(): Promise<{
     tag(replayPicks, "recently_played");
   }
 
-  // ---------- Layer 2 ----------
-  const longTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
-    "/me/top/tracks?time_range=long_term&limit=50"
-  );
-  tag(longTerm.items, "long_term");
-
-  if (out.length < RECENT_TARGET + ALLTIME_TARGET) {
-    // Saved tracks oldest-first as identity layer
+  // ---------- Layer 4 — saved library (newest saves) ----------
+  // Spotify /me/tracks default order is added_at desc — these are tracks the
+  // user explicitly saved, which is a stronger signal than algorithmic "top".
+  if (out.length < TARGET) {
     const saved = await spotifyFetch<{ items: Array<{ track: SpotifyTrack }> }>(
       "/me/tracks?limit=50&offset=0"
     );
     tag(
       (saved.items ?? []).map((i) => i.track).filter(Boolean),
+      "saved_early"
+    );
+  }
+
+  // ---------- Layer 5 — long_term as backstop ----------
+  // Demoted because Spotify's long_term algorithm can include tracks you
+  // barely played. Only pulled if we still need bodies.
+  if (out.length < TARGET) {
+    const longTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
+      "/me/top/tracks?time_range=long_term&limit=50"
+    );
+    tag(longTerm.items, "long_term");
+  }
+
+  // Pull a second page of saves if we still need more.
+  if (out.length < TARGET) {
+    const saved2 = await spotifyFetch<{ items: Array<{ track: SpotifyTrack }> }>(
+      "/me/tracks?limit=50&offset=50"
+    );
+    tag(
+      (saved2.items ?? []).map((i) => i.track).filter(Boolean),
       "saved_early"
     );
   }
@@ -92,7 +127,15 @@ export async function buildPool(): Promise<{
       acc[t.source] = (acc[t.source] ?? 0) + 1;
       return acc;
     },
-    { short_term: 0, recently_played: 0, long_term: 0, saved_early: 0, genre_fill: 0, manual: 0 }
+    {
+      short_term: 0,
+      medium_term: 0,
+      recently_played: 0,
+      long_term: 0,
+      saved_early: 0,
+      genre_fill: 0,
+      manual: 0,
+    }
   );
 
   return { pool, composition };

@@ -17,6 +17,7 @@ const TARGET = 128;
 const SOURCE_DOT: Record<PoolSource, string> = {
   short_term: "bg-orange-500",
   recently_played: "bg-orange-500",
+  medium_term: "bg-pink-400",
   long_term: "bg-purple-500",
   saved_early: "bg-purple-500",
   genre_fill: "bg-zinc-500",
@@ -131,7 +132,9 @@ export default function PoolPage() {
             <h1 className="text-base font-semibold leading-tight">Your 128</h1>
             {composition ? (
               <p className="text-[11px] text-zinc-500 leading-tight truncate">
-                {composition.short_term + composition.recently_played} recent · {composition.long_term + composition.saved_early} all-time
+                {composition.short_term + composition.recently_played} recent
+                {composition.medium_term ? ` · ${composition.medium_term} 6mo` : ""}
+                {" · "}{composition.long_term + composition.saved_early} all-time
                 {composition.genre_fill ? ` · ${composition.genre_fill} genre` : ""}
               </p>
             ) : null}
