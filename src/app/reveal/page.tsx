@@ -5,6 +5,7 @@ import type { PoolEntry } from "@/lib/pool";
 import { loadRanked, clearRunState } from "@/lib/storage";
 import { exportPlaylists, type ExportResult } from "@/lib/export";
 import { isAuthed } from "@/lib/auth";
+import { getQuips } from "@/lib/quips";
 
 export default function RevealPage() {
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -15,6 +16,7 @@ export default function RevealPage() {
   const [err, setErr] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [quips, setQuips] = useState<string[]>([]);
 
   useEffect(() => {
     if (!isAuthed()) {
@@ -27,6 +29,7 @@ export default function RevealPage() {
       return;
     }
     setRanked(r);
+    setQuips(getQuips(r, 2));
   }, [basePath]);
 
   if (missing) {
@@ -73,6 +76,38 @@ export default function RevealPage() {
           </p>
         </div>
       </header>
+
+      {quips.length > 0 && (
+        <section className="max-w-2xl mx-auto px-3 sm:px-4 mt-4 sm:mt-5">
+          {/* Sarcastic-but-affectionate read on the user's taste. Refreshable
+              so people can keep cycling through hot takes. */}
+          <div className="rounded-2xl border border-zinc-800 bg-gradient-to-br from-fuchsia-950/30 via-zinc-900/40 to-zinc-900/40 p-4 sm:p-5 relative">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] uppercase tracking-[0.22em] text-fuchsia-300/80 font-semibold">
+                The Verdict
+              </span>
+              <button
+                onClick={() => ranked && setQuips(getQuips(ranked, 2))}
+                aria-label="Get a fresh roast"
+                className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 hover:text-fuchsia-300 transition px-2 py-0.5 rounded-full border border-zinc-800 hover:border-fuchsia-700/60"
+              >
+                roast me again ↻
+              </button>
+            </div>
+            <ul className="space-y-2">
+              {quips.map((q, i) => (
+                <li
+                  key={`${i}-${q}`}
+                  className="text-sm sm:text-[15px] text-zinc-200 leading-snug"
+                >
+                  <span className="text-fuchsia-400/70 mr-2">›</span>
+                  {q}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      )}
 
       <ol className="max-w-2xl mx-auto px-3 sm:px-4 mt-4 sm:mt-6 space-y-1.5">
         {visible.map((t, i) => (
