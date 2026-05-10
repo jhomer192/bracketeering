@@ -4,8 +4,11 @@
 //   - long_term top tracks      ← Spotify's all-time favorites
 //   - medium_term top tracks    ← last 6 months
 //   - short_term top tracks     ← last 4 weeks; capped at 5 forever
-//   - playlist cross-frequency  ← songs appearing in many of the user's
-//                                  own playlists (auto-gen excluded)
+//   - playlist cross-frequency  ← songs in ≥3 of the user's own playlists
+//                                  (auto-gen excluded). 1- and 2-playlist
+//                                  songs are dropped — adding a track to
+//                                  one playlist is "I added this once,"
+//                                  not "this is a favorite."
 //
 // Pass 1: 20 / 20 / 5 / 20    = up to 65 admits
 // Pass 2: 40 / 40 / 5 / 40    = up to 125 cumulative
@@ -59,6 +62,13 @@ const PASS_QUOTAS = [
 // the user has fewer played+saved tracks than the pool target.
 // "Today's Top Hits" — a stable Spotify-owned playlist that always exists.
 const TODAYS_TOP_HITS_PLAYLIST_ID = "37i9dQZF1DXcBWIGoYBM5M";
+
+// Cross-playlist signal threshold. A track in only 1 or 2 of the user's
+// playlists isn't a "vote" — it's just "I added this once at some point."
+// Real curation signal starts at 3+ appearances. Below this floor, songs
+// don't get admitted via the playlist channel (they can still come in
+// through long_term/medium_term/short_term if they earn it elsewhere).
+const MIN_PLAYLIST_APPEARANCES = 3;
 
 /** Normalize a track title for cross-release dedup. Spotify gives the same
  *  recording multiple IDs across single/album/deluxe/regional/remaster
@@ -154,8 +164,9 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     cursor.playlist = quota.playlist;
   }
 
-  // Drain the rest of the playlist cross-frequency list. Lower appearance
-  // counts are weaker signal but still real curation — they beat saves.
+  // Drain any remaining cross-playlist entries we didn't reach in the
+  // pass schedule. All entries here are already ≥3-playlist songs, so
+  // they're still legitimate curation — just lower-ranked.
   if (out.length < TARGET && cursor.playlist < playlistFreqList.length) {
     admit(playlistFreqList.slice(cursor.playlist), "playlist");
   }
@@ -224,9 +235,9 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
  *
  *  A track that appears in 7 of your playlists has been "voted for" 7 times
  *  by you — much stronger curation signal than appearing in just one. Returns
- *  tracks sorted by descending appearance count. Ties (e.g. all the songs
- *  that appear in exactly 2 playlists) are ordered by Spotify's playlist
- *  insertion order — stable, not random.
+ *  tracks sorted by descending appearance count, filtered to those that
+ *  appear in at least MIN_PLAYLIST_APPEARANCES (3) playlists. Ties ordered
+ *  by Spotify's playlist insertion order — stable, not random.
  *
  *  Excludes:
  *    - playlists owned by Spotify (Daily Mix, Discover Weekly, Release Radar,
@@ -235,8 +246,8 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
  *      anyway, but defensively filtered by name)
  *
  *  Scans up to 50 of the user's owned playlists (one /me/playlists page).
- *  Per playlist, pulls up to 1000 tracks. Errors on individual playlists are
- *  swallowed so one bad playlist doesn't break the signal.
+ *  Per playlist, pulls up to 300 tracks across 3 pages. Errors on individual
+ *  playlists are swallowed so one bad playlist doesn't break the signal.
  */
 async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
   const me = await spotifyFetch<{ id: string }>("/me");
@@ -301,6 +312,7 @@ async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
   }
 
   return [...byKey.values()]
+    .filter((e) => e.count >= MIN_PLAYLIST_APPEARANCES)
     .sort((a, b) => b.count - a.count || a.firstSeenOrder - b.firstSeenOrder)
     .map((e) => e.track);
 }
