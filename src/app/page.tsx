@@ -21,11 +21,16 @@ export default function Home() {
         </Link>
 
         <ol className="text-sm text-zinc-500 space-y-1 text-left max-w-xs mx-auto">
-          <li>1. We pull your 64 most-recent + 64 all-time.</li>
-          <li>2. You sub in any songs we missed.</li>
-          <li>3. ~210 head-to-heads, ~18 minutes.</li>
-          <li>4. Top 10 + Top 25 saved to your Spotify.</li>
+          <li>1. 90-sec one-time setup (Spotify dev keys).</li>
+          <li>2. We pull your 64 most-recent + 64 all-time.</li>
+          <li>3. You sub in any songs we missed.</li>
+          <li>4. ~210 head-to-heads, ~18 minutes.</li>
+          <li>5. Top 10 + Top 25 saved to your Spotify.</li>
         </ol>
+        <p className="text-xs text-zinc-600 max-w-xs mx-auto">
+          Step 1 sounds annoying but it&apos;s how we let any number of people use this
+          for free. Spotify caps shared apps at 5 friends.
+        </p>
       </div>
     </main>
   );

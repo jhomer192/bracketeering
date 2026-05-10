@@ -1,5 +1,10 @@
 // Thin Spotify Web API client. No SDK — just typed fetch wrappers.
 // Handles token refresh transparently when the session has a refresh_token.
+//
+// BYO Client ID model: client_id + client_secret come from the user's
+// session (set on /setup), not from env. Only the redirect URI is server-
+// controlled (one shared URL per deployment, added by each user to their
+// own Spotify dev app's allow-list).
 
 import type { SessionData } from "./session";
 
@@ -41,13 +46,18 @@ type RefreshResult = {
   refresh_token?: string;
 };
 
-export function buildAuthUrl(state: string) {
-  const clientId = requireEnv("SPOTIFY_CLIENT_ID");
-  const redirect = requireEnv("SPOTIFY_REDIRECT_URI");
+/** Where Spotify redirects users back after consent. Server-controlled, one
+ *  per deployment (each user adds this exact URL to their own dev app). */
+export function getRedirectUri() {
+  return requireEnv("SPOTIFY_REDIRECT_URI");
+}
+
+export function buildAuthUrl(session: SessionData, state: string) {
+  if (!session.client_id) throw new Error("no client_id in session — visit /setup first");
   const params = new URLSearchParams({
-    client_id: clientId,
+    client_id: session.client_id,
     response_type: "code",
-    redirect_uri: redirect,
+    redirect_uri: getRedirectUri(),
     scope: SCOPES,
     state,
     show_dialog: "false",
@@ -55,21 +65,18 @@ export function buildAuthUrl(state: string) {
   return `https://accounts.spotify.com/authorize?${params.toString()}`;
 }
 
-export async function exchangeCode(code: string) {
-  const clientId = requireEnv("SPOTIFY_CLIENT_ID");
-  const clientSecret = requireEnv("SPOTIFY_CLIENT_SECRET");
-  const redirect = requireEnv("SPOTIFY_REDIRECT_URI");
-
+export async function exchangeCode(session: SessionData, code: string) {
+  const { client_id, client_secret } = mustHaveCreds(session);
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: redirect,
+    redirect_uri: getRedirectUri(),
   });
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      Authorization: basicAuth(client_id, client_secret),
     },
     body,
   });
@@ -83,9 +90,8 @@ async function refreshIfNeeded(session: SessionData): Promise<string> {
     return session.access_token;
   }
   if (!session.refresh_token) throw new Error("no refresh_token in session — re-auth required");
+  const { client_id, client_secret } = mustHaveCreds(session);
 
-  const clientId = requireEnv("SPOTIFY_CLIENT_ID");
-  const clientSecret = requireEnv("SPOTIFY_CLIENT_SECRET");
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: session.refresh_token,
@@ -94,7 +100,7 @@ async function refreshIfNeeded(session: SessionData): Promise<string> {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      Authorization: basicAuth(client_id, client_secret),
     },
     body,
   });
@@ -115,6 +121,17 @@ export async function spotifyFetch<T>(session: SessionData, path: string): Promi
     throw new Error(`spotify ${path} → ${res.status}: ${await res.text()}`);
   }
   return (await res.json()) as T;
+}
+
+function mustHaveCreds(session: SessionData): { client_id: string; client_secret: string } {
+  if (!session.client_id || !session.client_secret) {
+    throw new Error("session missing BYO Spotify creds — visit /setup");
+  }
+  return { client_id: session.client_id, client_secret: session.client_secret };
+}
+
+function basicAuth(id: string, secret: string) {
+  return `Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`;
 }
 
 function requireEnv(name: string): string {
