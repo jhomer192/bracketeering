@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { buildPool, searchTracks, tracksByIds, type PoolEntry, type PoolSource } from "@/lib/pool";
 import { isAuthed } from "@/lib/auth";
 import type { SpotifyTrack } from "@/lib/spotify";
@@ -12,8 +12,18 @@ import {
   clearBuiltPool,
   takePendingImport,
 } from "@/lib/storage";
+import {
+  parseGroupParams,
+  slotSize as slotSizeFn,
+  expectedFromCount,
+  buildHandoffUrl,
+  MIN_GROUP,
+  MAX_GROUP,
+  type GroupParams,
+} from "@/lib/group";
 
-const TARGET = 128;
+const TOTAL = 128;
+const PENDING_KEY = "bracketeering.pending_group"; // stash full querystring across login
 
 const SOURCE_DOT: Record<PoolSource, string> = {
   playlist: "bg-yellow-400",
@@ -27,77 +37,78 @@ const SOURCE_DOT: Record<PoolSource, string> = {
   shared: "bg-sky-400",
 };
 
+type Mode =
+  | { kind: "solo" }
+  | { kind: "shared" } // entire pool was sent over ?p=, no group params
+  | { kind: "group"; params: GroupParams };
+
 export default function PoolPage() {
   const [pool, setPool] = useState<PoolEntry[] | null>(null);
+  const [friendTracks, setFriendTracks] = useState<PoolEntry[]>([]);
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [composition, setComposition] = useState<Record<PoolSource, number> | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [mode, setMode] = useState<Mode>({ kind: "solo" });
 
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
   useEffect(() => {
     let cancelled = false;
 
-    // Detect ?p=ID,ID,... — a shared pool import. If present we replace any
-    // cached pool with the shared one so the recipient ranks the sender's
-    // 128 instead of their own. Stash + redirect if not yet authed.
     const url = new URL(window.location.href);
-    const pParam = url.searchParams.get("p");
 
+    // If not authed and there's anything interesting in the URL, stash it
+    // so it survives the OAuth round-trip.
     if (!isAuthed()) {
-      if (pParam) {
-        // Persist the import token so it survives the OAuth round-trip.
-        localStorage.setItem("bracketeering.pending_import", pParam);
+      const search = url.search;
+      if (search && (url.searchParams.get("p") || url.searchParams.get("g"))) {
+        localStorage.setItem(PENDING_KEY, search);
       }
       window.location.replace(`${basePath}/`);
       return;
     }
 
-    const pendingFromQuery = pParam;
-    const pending = pendingFromQuery ?? takePendingImport();
+    // After login, replay any stashed querystring.
+    const pending = localStorage.getItem(PENDING_KEY);
+    if (pending && !url.search) {
+      localStorage.removeItem(PENDING_KEY);
+      const replay = new URL(window.location.href);
+      replay.search = pending;
+      window.history.replaceState({}, "", replay.toString());
+      url.search = pending;
+    }
 
-    if (pending) {
-      // Strip the param from the URL so a refresh doesn't re-trigger import.
-      url.searchParams.delete("p");
-      window.history.replaceState({}, "", url.toString());
+    const groupParams = parseGroupParams(url.searchParams);
 
-      const ids = pending.split(",").map((s) => s.trim()).filter(Boolean);
-      if (ids.length === 0) {
-        setError("Shared pool link was empty.");
-        return;
-      }
-      tracksByIds(ids)
-        .then((tracks) => {
-          if (cancelled) return;
-          const pool: PoolEntry[] = tracks.map((t) => ({ ...t, source: "shared" as const }));
-          const composition: Record<PoolSource, number> = {
-            playlist: 0, short_term: 0, medium_term: 0, recently_played: 0,
-            long_term: 0, saved_early: 0, genre_fill: 0, manual: 0,
-            shared: pool.length,
-          };
-          saveBuiltPool(pool, composition);
-          setPool(pool);
-          setComposition(composition);
-        })
-        .catch((e) => {
-          if (cancelled) return;
-          setError(e instanceof Error ? e.message : String(e));
-        });
+    if (groupParams) {
+      enterGroupMode(groupParams, url, cancelled);
       return () => {
         cancelled = true;
       };
     }
 
-    // Use cached pool if we have one — pulling 5 endpoints from Spotify is
-    // slow and a refresh shouldn't pay that cost again.
+    // Plain ?p= without group params = "rank this curated 128" import.
+    const pParam = url.searchParams.get("p");
+    const pendingLegacy = pParam ?? takePendingImport();
+    if (pendingLegacy) {
+      url.searchParams.delete("p");
+      window.history.replaceState({}, "", url.toString());
+      enterSharedMode(pendingLegacy, cancelled);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // Solo mode: cached pool or build fresh.
+    setMode({ kind: "solo" });
     const cached = loadBuiltPool();
     if (cached) {
       setPool(cached.pool);
       setComposition(cached.composition);
       return;
     }
-
     buildPool()
       .then((data) => {
         if (cancelled) return;
@@ -112,6 +123,72 @@ export default function PoolPage() {
     return () => {
       cancelled = true;
     };
+
+    function enterSharedMode(idsCsv: string, cancel: boolean) {
+      const ids = idsCsv.split(",").map((s) => s.trim()).filter(Boolean);
+      if (ids.length === 0) {
+        setError("Shared pool link was empty.");
+        return;
+      }
+      tracksByIds(ids)
+        .then((tracks) => {
+          if (cancel) return;
+          const sharedPool: PoolEntry[] = tracks.map((t) => ({
+            ...t,
+            source: "shared" as const,
+          }));
+          const comp: Record<PoolSource, number> = blankComposition();
+          comp.shared = sharedPool.length;
+          saveBuiltPool(sharedPool, comp);
+          setPool(sharedPool);
+          setComposition(comp);
+          setMode({ kind: "shared" });
+        })
+        .catch((e) => {
+          if (cancel) return;
+          setError(e instanceof Error ? e.message : String(e));
+        });
+    }
+
+    function enterGroupMode(p: GroupParams, currentUrl: URL, cancel: boolean) {
+      setMode({ kind: "group", params: p });
+
+      const friendIdSet = new Set(p.fromIds);
+
+      // Hydrate friend tracks (the contributions from earlier slots).
+      const friendsP =
+        p.fromIds.length > 0
+          ? tracksByIds(p.fromIds).then((tracks) =>
+              tracks.map<PoolEntry>((t) => ({ ...t, source: "shared" as const }))
+            )
+          : Promise.resolve<PoolEntry[]>([]);
+
+      // Build (or load cached) the user's own pool, with friend tracks excluded.
+      const ownP = (async (): Promise<{ pool: PoolEntry[]; composition: Record<PoolSource, number> }> => {
+        const cached = loadBuiltPool();
+        if (cached && cached.pool.every((t) => t.source !== "shared")) {
+          return cached;
+        }
+        const data = await buildPool();
+        saveBuiltPool(data.pool, data.composition);
+        return data;
+      })();
+
+      Promise.all([friendsP, ownP])
+        .then(([friends, own]) => {
+          if (cancel) return;
+          const ownFiltered = own.pool.filter((t) => !friendIdSet.has(t.id));
+          setFriendTracks(friends);
+          setPool(ownFiltered);
+          setComposition(own.composition);
+        })
+        .catch((e) => {
+          if (cancel) return;
+          setError(e instanceof Error ? e.message : String(e));
+        });
+
+      void currentUrl;
+    }
   }, [basePath]);
 
   const toggle = useCallback((id: string) => {
@@ -123,26 +200,47 @@ export default function PoolPage() {
     });
   }, []);
 
-  const addManual = useCallback((track: SpotifyTrack) => {
-    setPool((prev) => {
-      if (!prev) return prev;
-      // If the track is already in the pool, just un-remove it instead of dup.
-      if (prev.some((p) => p.id === track.id)) {
-        setRemoved((r) => {
-          if (!r.has(track.id)) return r;
-          const n = new Set(r);
-          n.delete(track.id);
-          return n;
-        });
-        return prev;
-      }
-      const entry: PoolEntry = { ...track, source: "manual" };
-      const next = [entry, ...prev];
-      // Persist to cache so a refresh keeps the manually-added song.
-      if (composition) saveBuiltPool(next, composition);
-      return next;
-    });
-  }, [composition]);
+  const addManual = useCallback(
+    (track: SpotifyTrack) => {
+      setPool((prev) => {
+        if (!prev) return prev;
+        // Already in pool — un-remove instead of duplicating.
+        if (prev.some((p) => p.id === track.id)) {
+          setRemoved((r) => {
+            if (!r.has(track.id)) return r;
+            const n = new Set(r);
+            n.delete(track.id);
+            return n;
+          });
+          return prev;
+        }
+        const entry: PoolEntry = { ...track, source: "manual" };
+        const next = [entry, ...prev];
+        if (composition && mode.kind !== "group") saveBuiltPool(next, composition);
+        return next;
+      });
+    },
+    [composition, mode.kind]
+  );
+
+  const myKept = useMemo(
+    () => (pool ?? []).filter((t) => !removed.has(t.id)),
+    [pool, removed]
+  );
+
+  // Targets vary by mode — solo/shared rank 128, group rank slotSize(N,K).
+  const myTarget = useMemo(() => {
+    if (mode.kind === "group") return slotSizeFn(mode.params.groupSize, mode.params.slotIndex);
+    return TOTAL;
+  }, [mode]);
+
+  const friendCount = friendTracks.length;
+  const totalCount = friendCount + myKept.length;
+  const totalTarget = mode.kind === "group" ? friendCount + myTarget : TOTAL;
+
+  const myReady = myKept.length === myTarget;
+
+  // ----- Render guards -----
 
   if (error) {
     return (
@@ -162,24 +260,69 @@ export default function PoolPage() {
     return (
       <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex items-center justify-center px-6 py-12">
         <div className="text-center space-y-2">
-          <div className="text-2xl font-semibold">Building your pool…</div>
-          <div className="text-zinc-500 text-sm">Pulling recent + all-time + filling gaps</div>
+          <div className="text-2xl font-semibold">
+            {mode.kind === "group" ? "Loading group bracket…" : "Building your pool…"}
+          </div>
+          <div className="text-zinc-500 text-sm">
+            {mode.kind === "group"
+              ? "Pulling friends' contributions and your tracks"
+              : "Pulling recent + all-time + filling gaps"}
+          </div>
         </div>
       </main>
     );
   }
 
-  const kept = pool.filter((t) => !removed.has(t.id));
-  const remaining = TARGET - kept.length;
-  const ready = kept.length === TARGET;
+  // ----- Footer action handler -----
+
+  function onPrimaryAction() {
+    if (!myReady) return;
+    if (mode.kind === "group") {
+      const combined = [...friendTracks.map((t) => t.id), ...myKept.map((t) => t.id)];
+      const isLast = mode.params.slotIndex === mode.params.groupSize;
+      if (isLast) {
+        // Last slot — rank the merged 128.
+        const merged: PoolEntry[] = [...friendTracks, ...myKept];
+        saveKeptPool(merged);
+        clearCompareState();
+        // Strip group params before navigating.
+        window.location.href = `${basePath}/compare/`;
+        return;
+      }
+      // Otherwise build the handoff URL and share/copy it.
+      const url = buildHandoffUrl({
+        origin: window.location.origin,
+        basePath,
+        groupSize: mode.params.groupSize,
+        nextSlot: mode.params.slotIndex + 1,
+        combinedIds: combined,
+      });
+      shareOrCopy(url, `Your turn — slot ${mode.params.slotIndex + 1}/${mode.params.groupSize}`);
+      return;
+    }
+    // solo / shared
+    saveKeptPool(myKept);
+    clearCompareState();
+    window.location.href = `${basePath}/compare/`;
+  }
 
   return (
     <main className="min-h-dvh bg-zinc-950 text-zinc-50 pb-28">
       <header className="sticky top-0 z-10 backdrop-blur bg-zinc-950/85 border-b border-zinc-800">
         <div className="max-w-3xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-base font-semibold leading-tight">Your 128</h1>
-            {composition ? (
+            <h1 className="text-base font-semibold leading-tight">
+              {mode.kind === "group"
+                ? `Group bracket · slot ${mode.params.slotIndex}/${mode.params.groupSize}`
+                : mode.kind === "shared"
+                ? "Shared pool"
+                : "Your 128"}
+            </h1>
+            {mode.kind === "group" ? (
+              <p className="text-[11px] text-zinc-500 leading-tight truncate">
+                {friendCount} from friends · contribute {myTarget}
+              </p>
+            ) : composition ? (
               <p className="text-[11px] text-zinc-500 leading-tight truncate">
                 {composition.shared ? `${composition.shared} shared` : (
                   <>
@@ -194,21 +337,75 @@ export default function PoolPage() {
             ) : null}
           </div>
           <div className="text-right flex-none">
-            <div
-              className={`text-base font-semibold leading-tight ${
-                ready ? "text-emerald-400" : kept.length > TARGET ? "text-amber-400" : "text-zinc-200"
-              }`}
-            >
-              {kept.length}/{TARGET}
-            </div>
-            <div className="text-[11px] text-zinc-500 leading-tight">
-              {remaining > 0 ? `add ${remaining}` : remaining < 0 ? `remove ${-remaining}` : "ready"}
-            </div>
+            {mode.kind === "group" ? (
+              <>
+                <div
+                  className={`text-base font-semibold leading-tight tabular-nums ${
+                    myReady ? "text-emerald-400" : myKept.length > myTarget ? "text-amber-400" : "text-zinc-200"
+                  }`}
+                >
+                  {myKept.length}/{myTarget}
+                </div>
+                <div className="text-[11px] text-zinc-500 leading-tight">
+                  {myReady
+                    ? "ready"
+                    : myKept.length < myTarget
+                    ? `add ${myTarget - myKept.length}`
+                    : `remove ${myKept.length - myTarget}`}
+                </div>
+              </>
+            ) : (
+              <>
+                <div
+                  className={`text-base font-semibold leading-tight tabular-nums ${
+                    myReady ? "text-emerald-400" : myKept.length > TOTAL ? "text-amber-400" : "text-zinc-200"
+                  }`}
+                >
+                  {myKept.length}/{TOTAL}
+                </div>
+                <div className="text-[11px] text-zinc-500 leading-tight">
+                  {myReady
+                    ? "ready"
+                    : myKept.length < TOTAL
+                    ? `add ${TOTAL - myKept.length}`
+                    : `remove ${myKept.length - TOTAL}`}
+                </div>
+              </>
+            )}
           </div>
         </div>
+
+        {mode.kind === "group" && expectedFromCount(mode.params.groupSize, mode.params.slotIndex) !== friendCount && (
+          <div className="bg-amber-950/40 border-t border-amber-800/40 px-4 py-1.5 text-[11px] text-amber-200">
+            Expected {expectedFromCount(mode.params.groupSize, mode.params.slotIndex)} tracks from earlier slots, got
+            {" "}{friendCount}. Some IDs may have been invalid.
+          </div>
+        )}
       </header>
 
       <div className="max-w-3xl mx-auto px-2 pt-2">
+        {/* Friend contributions section (group mode only) — locked. */}
+        {mode.kind === "group" && friendTracks.length > 0 && (
+          <div className="mb-3">
+            <div className="px-1 mb-1 flex items-center justify-between">
+              <p className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                Locked from friends · {friendTracks.length}
+              </p>
+            </div>
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-1.5">
+              {friendTracks.map((t) => (
+                <FriendTile key={`f-${t.id}`} track={t} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Your contributable pool. */}
+        {mode.kind === "group" && (
+          <p className="px-1 mt-4 mb-1 text-[11px] text-zinc-500 uppercase tracking-wider">
+            Your contribution · keep {myTarget}
+          </p>
+        )}
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-1.5">
           {pool.map((t) => {
             const isRemoved = removed.has(t.id);
@@ -245,17 +442,31 @@ export default function PoolPage() {
         </div>
 
         <div className="text-center mt-6 pb-4 space-y-2">
-          <div>
-            <ShareButton kept={kept} />
-          </div>
+          {mode.kind === "solo" && (
+            <>
+              <div>
+                <ShareButton kept={myKept} />
+              </div>
+              <div>
+                <button
+                  onClick={() => setGroupModalOpen(true)}
+                  disabled={myKept.length === 0}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 underline disabled:opacity-40"
+                >
+                  start group bracket →
+                </button>
+              </div>
+            </>
+          )}
           <div>
             <button
               onClick={() => {
                 if (confirm("Refetch your pool from Spotify? Your tap-to-removes will reset.")) {
                   clearBuiltPool();
-                  // Strip ?p= so we don't re-trigger a shared import.
                   const u = new URL(window.location.href);
                   u.searchParams.delete("p");
+                  u.searchParams.delete("g");
+                  u.searchParams.delete("s");
                   window.location.replace(u.toString());
                 }
               }}
@@ -276,18 +487,13 @@ export default function PoolPage() {
             + Add
           </button>
           <button
-            disabled={!ready}
-            className={`h-12 px-6 rounded-full font-semibold flex-none ${
-              ready ? "bg-[#1DB954] active:bg-[#1ed760] text-black" : "bg-zinc-800 text-zinc-500"
+            disabled={!myReady}
+            className={`h-12 px-5 rounded-full font-semibold flex-none text-sm sm:text-base ${
+              myReady ? "bg-[#1DB954] active:bg-[#1ed760] text-black" : "bg-zinc-800 text-zinc-500"
             }`}
-            onClick={() => {
-              if (!ready) return;
-              saveKeptPool(kept);
-              clearCompareState();
-              window.location.href = `${basePath}/compare/`;
-            }}
+            onClick={onPrimaryAction}
           >
-            Start →
+            {primaryLabel(mode, totalCount, totalTarget)}
           </button>
         </div>
       </footer>
@@ -298,10 +504,185 @@ export default function PoolPage() {
           onPick={(t) => {
             addManual(t);
           }}
-          existingIds={new Set(kept.map((p) => p.id))}
+          existingIds={new Set([...myKept.map((p) => p.id), ...friendTracks.map((p) => p.id)])}
+        />
+      )}
+
+      {groupModalOpen && (
+        <GroupSetupModal
+          onClose={() => setGroupModalOpen(false)}
+          keptIds={myKept.map((t) => t.id)}
+          basePath={basePath}
         />
       )}
     </main>
+  );
+}
+
+function primaryLabel(mode: Mode, totalCount: number, totalTarget: number): string {
+  if (mode.kind === "group") {
+    const isLast = mode.params.slotIndex === mode.params.groupSize;
+    if (isLast) return `Start ranking (${totalCount}/${totalTarget}) →`;
+    return `Send to slot ${mode.params.slotIndex + 1} →`;
+  }
+  return "Start →";
+}
+
+function blankComposition(): Record<PoolSource, number> {
+  return {
+    playlist: 0,
+    short_term: 0,
+    medium_term: 0,
+    recently_played: 0,
+    long_term: 0,
+    saved_early: 0,
+    genre_fill: 0,
+    manual: 0,
+    shared: 0,
+  };
+}
+
+async function shareOrCopy(url: string, title: string) {
+  type Nav = Navigator & { share?: (data: ShareData) => Promise<void> };
+  const nav = navigator as Nav;
+  if (typeof nav.share === "function") {
+    try {
+      await nav.share({ title: "Bracketeering", text: title, url });
+      return;
+    } catch {
+      // user cancelled — fall through
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    alert("Link copied — paste into iMessage / DM to your friend.");
+  } catch {
+    window.prompt("Copy this link:", url);
+  }
+}
+
+function FriendTile({ track }: { track: PoolEntry }) {
+  const art = track.album.images?.[0]?.url ?? "";
+  return (
+    <div
+      title={`${track.name} — ${track.artists.map((a) => a.name).join(", ")}`}
+      className="relative aspect-square rounded-md overflow-hidden border border-sky-800/60"
+    >
+      {art ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={art} alt={track.album.name} className="w-full h-full object-cover" />
+      ) : (
+        <div className="w-full h-full bg-zinc-800" />
+      )}
+      <span className="absolute top-1 left-1 w-2 h-2 rounded-full bg-sky-400" />
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/55 to-transparent p-1 pt-5 text-left">
+        <div className="text-[10px] font-medium leading-tight line-clamp-1">{track.name}</div>
+        <div className="text-[10px] text-zinc-400 leading-tight line-clamp-1">
+          {track.artists.map((a) => a.name).join(", ")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GroupSetupModal({
+  onClose,
+  keptIds,
+  basePath,
+}: {
+  onClose: () => void;
+  keptIds: string[];
+  basePath: string;
+}) {
+  const [size, setSize] = useState(4);
+
+  const mySize = slotSizeFn(size, 1);
+  const enoughKept = keptIds.length >= mySize;
+
+  function onStart() {
+    // Take the first `mySize` IDs as the host's contribution. The host can
+    // re-curate later if they want by tap-removing then re-running.
+    const myContribution = keptIds.slice(0, mySize);
+    const url = buildHandoffUrl({
+      origin: window.location.origin,
+      basePath,
+      groupSize: size,
+      nextSlot: 2,
+      combinedIds: myContribution,
+    });
+    shareOrCopy(url, `Slot 2/${size} — your turn to add ${slotSizeFn(size, 2)} tracks`);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-30 bg-zinc-950/95 backdrop-blur flex items-center justify-center p-4">
+      <div className="max-w-sm w-full rounded-2xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold">Group bracket</h2>
+          <p className="text-zinc-400 text-sm mt-1 leading-snug">
+            Up to 4 friends each contribute a slice of the pool. Last person ranks
+            the merged 128.
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-xs uppercase tracking-wider text-zinc-500 mb-2">
+            How many people total?
+          </label>
+          <div className="flex gap-2">
+            {Array.from({ length: MAX_GROUP - MIN_GROUP + 1 }, (_, i) => i + MIN_GROUP).map((n) => (
+              <button
+                key={n}
+                onClick={() => setSize(n)}
+                className={`flex-1 h-12 rounded-lg border font-semibold transition ${
+                  size === n
+                    ? "border-emerald-500 bg-emerald-500/10 text-emerald-300"
+                    : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-600"
+                }`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-sm space-y-1">
+          <div className="flex justify-between">
+            <span className="text-zinc-400">Each slot contributes:</span>
+            <span className="font-mono">{slotSizeFn(size, 1)} (last: {slotSizeFn(size, size)})</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-zinc-400">You contribute:</span>
+            <span className={`font-mono ${enoughKept ? "text-zinc-200" : "text-amber-400"}`}>
+              {Math.min(mySize, keptIds.length)}/{mySize}
+            </span>
+          </div>
+        </div>
+
+        {!enoughKept && (
+          <div className="text-xs text-amber-400 leading-snug">
+            Your pool only has {keptIds.length} tracks — need at least {mySize} to host a group of {size}.
+            Add more songs first.
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 h-11 rounded-full bg-zinc-800 active:bg-zinc-700 text-sm font-semibold"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!enoughKept}
+            onClick={onStart}
+            className="flex-1 h-11 rounded-full bg-[#1DB954] active:bg-[#1ed760] disabled:opacity-50 text-black text-sm font-semibold"
+          >
+            Send to slot 2 →
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -314,7 +695,6 @@ function ShareButton({ kept }: { kept: PoolEntry[] }) {
     const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
     const url = `${window.location.origin}${basePath}/pool/?p=${ids}`;
 
-    // Prefer the native share sheet on phones — copy is the desktop fallback.
     type Nav = Navigator & { share?: (data: ShareData) => Promise<void> };
     const nav = navigator as Nav;
     if (typeof nav.share === "function") {
@@ -326,7 +706,7 @@ function ShareButton({ kept }: { kept: PoolEntry[] }) {
         });
         return;
       } catch {
-        // user cancelled or share failed — fall through to clipboard
+        // fall through
       }
     }
     try {
@@ -334,7 +714,6 @@ function ShareButton({ kept }: { kept: PoolEntry[] }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } catch {
-      // very old browsers — last resort, prompt the user
       window.prompt("Copy this link:", url);
     }
   }
@@ -371,8 +750,6 @@ function SearchModal({
     inputRef.current?.focus();
   }, []);
 
-  // Debounced live search — fires 350ms after the last keystroke so we don't
-  // hammer Spotify's /search endpoint while the user is still typing.
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!q.trim()) {
@@ -435,7 +812,7 @@ function SearchModal({
           )}
           {!q.trim() && (
             <p className="text-zinc-500 text-xs px-1 pt-2">
-              Type a song or &ldquo;song artist&rdquo;. Tap a result to add it to your 128.
+              Type a song or &ldquo;song artist&rdquo;. Tap a result to add it to your pool.
             </p>
           )}
           <ul className="space-y-1.5 mt-2">
