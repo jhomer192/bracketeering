@@ -6,6 +6,7 @@ import { loadKeptPool, loadRanked, clearRunState } from "@/lib/storage";
 import { exportPlaylists, type ExportResult } from "@/lib/export";
 import { isAuthed, hasExportScopes, startLogin } from "@/lib/auth";
 import { getQuips } from "@/lib/quips";
+import { renderTierCard, shareOrDownloadCard } from "@/lib/cardExport";
 
 // Tier breakpoints. Voted: top 25 (compare engine's FLOOR). Beyond that,
 // tracks are ordered by their pool position (best Spotify signal first).
@@ -25,6 +26,16 @@ const TIER_LABELS: Record<Tier, string> = {
   top128: "Top 128",
 };
 const TIER_ORDER: Tier[] = ["top10", "top25", "top50", "top100", "top128"];
+
+// Hex accents for the canvas card export — kept in sync with the on-page
+// tier colors (Tailwind amber-500, zinc-300, orange-600, zinc-500, zinc-600).
+const TIER_HEX: Record<Tier, string> = {
+  top10: "#f59e0b",
+  top25: "#d4d4d8",
+  top50: "#ea580c",
+  top100: "#71717a",
+  top128: "#52525b",
+};
 
 /** Which tier a 1-indexed rank falls into. */
 function tierFor(rank: number): Tier {
@@ -90,6 +101,10 @@ export default function RevealPage() {
   const [copied, setCopied] = useState(false);
   const [quips, setQuips] = useState<string[]>([]);
   const [needsReauth, setNeedsReauth] = useState(false);
+  // Per-tier share button state — "rendering" | "shared" | "downloaded" so
+  // we can give appropriate inline confirmation feedback.
+  const [cardBusy, setCardBusy] = useState(false);
+  const [cardStatus, setCardStatus] = useState<null | "shared" | "downloaded">(null);
 
   useEffect(() => {
     if (!isAuthed()) {
@@ -171,6 +186,34 @@ export default function RevealPage() {
     startLogin("/reveal/").catch((e) => {
       setErr(e instanceof Error ? e.message : "reconnect failed");
     });
+  }
+
+  async function shareCard() {
+    if (cardBusy) return;
+    setCardBusy(true);
+    setCardStatus(null);
+    try {
+      // ≤25 fits a numbered list legibly; >25 switches to a dense mosaic
+      // since track text would be too small to read in a 1080-wide PNG.
+      const variant = visible.length <= 25 ? "list" : "mosaic";
+      const blob = await renderTierCard({
+        tracks: visible,
+        tierLabel: TIER_LABELS[tier],
+        tierAccent: TIER_HEX[tier],
+        variant,
+      });
+      const result = await shareOrDownloadCard(
+        blob,
+        `bracketeering-${tier}.png`,
+        `My ${TIER_LABELS[tier]} (Bracketeering)`,
+      );
+      setCardStatus(result);
+      setTimeout(() => setCardStatus(null), 2400);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "card export failed");
+    } finally {
+      setCardBusy(false);
+    }
   }
 
   const visible = full128.slice(0, Math.min(limit, full128.length));
@@ -307,6 +350,22 @@ export default function RevealPage() {
       </ol>
 
       <div className="max-w-2xl mx-auto px-4 mt-3 flex items-center gap-4 flex-wrap">
+        {/* Image-card export — generates a 1080×1920 PNG of the current tier.
+            Web Share API on mobile lets users send straight to Stories /
+            iMessage; desktop falls through to a download. */}
+        <button
+          onClick={shareCard}
+          disabled={cardBusy}
+          className="text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-60 underline"
+        >
+          {cardBusy
+            ? "rendering…"
+            : cardStatus === "shared"
+              ? "shared ✓"
+              : cardStatus === "downloaded"
+                ? "downloaded ✓"
+                : `share ${TIER_LABELS[tier].toLowerCase()} as image`}
+        </button>
         <button
           onClick={async () => {
             // "1. Track — Artist[, Artist]" lines for whatever tier is
