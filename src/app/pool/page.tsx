@@ -13,6 +13,7 @@ import {
   type PlaylistSummary,
 } from "@/lib/pool";
 import { isAuthed } from "@/lib/auth";
+import { FLOOR } from "@/lib/compare";
 import type { SpotifyTrack } from "@/lib/spotify";
 import {
   saveKeptPool,
@@ -30,6 +31,7 @@ import {
   slotSize as slotSizeFn,
   expectedFromCount,
   buildHandoffUrl,
+  HANDOFF_URL_SAFE_LIMIT,
   MIN_GROUP,
   MAX_GROUP,
   type GroupParams,
@@ -399,6 +401,23 @@ export default function PoolPage() {
 
   function onPrimaryAction() {
     if (!myReady) return;
+    // Hard guard: the reveal page promises a "Top 25". If the user removed
+    // enough songs that the merged pool can't fill the floor, the playlist
+    // export silently ships short. Surface that here, where it's still
+    // recoverable, instead of after they've voted 200 times.
+    const finalSize =
+      mode.kind === "group" && mode.params.slotIndex === mode.params.groupSize
+        ? friendTracks.length + myKept.length
+        : myKept.length;
+    if (mode.kind !== "group" || mode.params.slotIndex === mode.params.groupSize) {
+      if (finalSize < FLOOR) {
+        window.alert(
+          `Your pool is ${finalSize} tracks but the bracket needs at least ${FLOOR} ` +
+            `to produce a Top 25. Add ${FLOOR - finalSize} more before continuing.`,
+        );
+        return;
+      }
+    }
     if (mode.kind === "group") {
       const combined = [...friendTracks.map((t) => t.id), ...myKept.map((t) => t.id)];
       const isLast = mode.params.slotIndex === mode.params.groupSize;
@@ -433,6 +452,18 @@ export default function PoolPage() {
         totalSize: mode.params.totalSize,
         combinedIds: combined,
       });
+      // SMS/iMessage/Twitter clip URLs over ~2KB silently — that would drop
+      // tracks from the receiving slot's pool and the next person would
+      // wonder why their list is short. Surface it before the user copies.
+      if (url.length > HANDOFF_URL_SAFE_LIMIT) {
+        const proceed = window.confirm(
+          `Heads up — this handoff link is ${url.length} characters. Some apps ` +
+            `(iMessage, SMS) may truncate links over ~${HANDOFF_URL_SAFE_LIMIT}. ` +
+            `Send it via a chat app that doesn't truncate (Discord, Signal, email) ` +
+            `or trim a few tracks from the pool. Continue anyway?`,
+        );
+        if (!proceed) return;
+      }
       shareOrCopy(url, `Your turn — slot ${mode.params.slotIndex + 1}/${mode.params.groupSize}`);
       return;
     }
@@ -1001,6 +1032,7 @@ function SearchTab({
   const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchTokenRef = useRef(0);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -1014,15 +1046,22 @@ function SearchTab({
       return;
     }
     setLoading(true);
+    // Sequence-token guard: typing "kendrick" then quickly correcting to
+    // "kendrik" used to allow the slower "kendrick" response to overwrite the
+    // fresher "kendrik" results. Each render bumps the token; only the
+    // most-recent fetch is allowed to set state.
+    const myToken = ++searchTokenRef.current;
     debounceRef.current = setTimeout(async () => {
       try {
         const items = await searchTracks(q);
+        if (myToken !== searchTokenRef.current) return; // stale
         setResults(items);
         setErr(null);
       } catch (e) {
+        if (myToken !== searchTokenRef.current) return;
         setErr(e instanceof Error ? e.message : "search failed");
       } finally {
-        setLoading(false);
+        if (myToken === searchTokenRef.current) setLoading(false);
       }
     }, 350);
     return () => {

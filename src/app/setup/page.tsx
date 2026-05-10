@@ -123,8 +123,26 @@ export default function SetupPage() {
 
           <li className="flex gap-3">
             <Step n={5} />
+            <div className="space-y-2">
+              <p>
+                <strong>Important — add yourself to the user list.</strong> Settings →{" "}
+                <strong>User Management</strong> → <strong>Add New User</strong>. Enter
+                the name and email <em>exactly as they appear</em> on your Spotify
+                account.
+              </p>
+              <p className="text-zinc-500 text-xs leading-snug">
+                Spotify dev apps default to a 25-user allowlist. Skipping this is the #1
+                cause of &ldquo;Save to Spotify&rdquo; failing later — even for the
+                app&apos;s own owner if your developer email doesn&apos;t match your
+                Spotify account email.
+              </p>
+            </div>
+          </li>
+
+          <li className="flex gap-3">
+            <Step n={6} />
             <div>
-              <p>Paste it here:</p>
+              <p>Paste your Client ID here:</p>
             </div>
           </li>
         </ol>

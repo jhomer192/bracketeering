@@ -9,6 +9,11 @@ import { getAccessToken } from "./auth";
 
 const API = "https://api.spotify.com/v1";
 
+// Minimum scopes for the actual workflow: pull listening history, build the
+// pool, write a private playlist, attach a cover. We deliberately do NOT ask
+// for `playlist-modify-public` — the export always sets `public: false`, so
+// requesting public-write would over-grant on the consent screen for no
+// functional benefit. (Less scope == less scary on the OAuth screen.)
 export const SCOPES = [
   "user-top-read",
   "user-library-read",
@@ -16,7 +21,6 @@ export const SCOPES = [
   "playlist-read-private",
   "playlist-read-collaborative",
   "playlist-modify-private",
-  "playlist-modify-public",
   "ugc-image-upload",
 ].join(" ");
 
@@ -40,13 +44,32 @@ export type SpotifyArtist = {
   genres: string[];
 };
 
+/** Read just enough of a Spotify error body to surface the actionable bit
+ *  (scope hint, dev-allowlist message) without echoing the whole reply,
+ *  which can include the request `q` param or other reflection vectors.
+ *  Drains the body either way so the connection isn't held. */
+async function summarizeSpotifyError(res: Response, path: string): Promise<string> {
+  const raw = await res.text().catch(() => "");
+  // Spotify error JSON shape: { error: { status, message } }. The message
+  // is curated by Spotify; the rest of the body sometimes echoes request
+  // fragments, so only keep `error.message`.
+  let safe = "";
+  try {
+    const j = JSON.parse(raw) as { error?: { message?: string } };
+    if (typeof j.error?.message === "string") safe = j.error.message;
+  } catch {
+    // non-JSON (HTML during outage, empty) — keep `safe` empty
+  }
+  return safe ? `spotify ${path} ${res.status}: ${safe}` : `spotify ${path} ${res.status}`;
+}
+
 /** GET helper that auto-refreshes the access token if needed. */
 export async function spotifyFetch<T>(path: string): Promise<T> {
   const token = await getAccessToken();
   const res = await fetch(`${API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(`spotify ${path} → ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(await summarizeSpotifyError(res, path));
   return (await res.json()) as T;
 }
 
@@ -63,8 +86,16 @@ export async function spotifyCall<T>(
     headers,
     body: init.body,
   });
-  if (!res.ok) throw new Error(`spotify ${path} → ${res.status}: ${await res.text()}`);
-  // 204 no-content (playlist image upload) returns empty
+  if (!res.ok) throw new Error(await summarizeSpotifyError(res, path));
+  // 204 no-content (playlist image upload) returns empty. Some endpoints can
+  // also reply with non-JSON bodies on edge cases (HTML during a Spotify
+  // outage, e.g.) — guard the parse so callers see a clean empty object
+  // instead of an opaque "Unexpected token" SyntaxError.
   const text = await res.text();
-  return (text ? JSON.parse(text) : ({} as T)) as T;
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return {} as T;
+  }
 }

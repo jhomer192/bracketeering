@@ -26,6 +26,10 @@ export type RenderCardOpts = {
   /** Hex color used for the rank medallion / accent. */
   tierAccent: string;
   variant: CardVariant;
+  /** Footer URL to advertise on the card (no protocol). Defaults to the
+   *  current deploy origin so a fork or local dev still points at itself
+   *  instead of jhomer192.github.io. */
+  shareHost?: string;
 };
 
 /** Render a tier card to a PNG Blob. */
@@ -93,7 +97,7 @@ export async function renderTierCard(opts: RenderCardOpts): Promise<Blob> {
   ctx.fillText("Bracketeer yours →", W / 2, H - 78);
   ctx.fillStyle = "#52525b";
   ctx.font = "400 22px system-ui, -apple-system, sans-serif";
-  ctx.fillText("jhomer192.github.io/bracketeering", W / 2, H - 42);
+  ctx.fillText(opts.shareHost ?? "jhomer192.github.io/bracketeering", W / 2, H - 42);
   ctx.textAlign = "left";
 
   return new Promise<Blob>((resolve, reject) => {

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getClientId, isAuthed, startLogin } from "@/lib/auth";
+import { LogoMark } from "@/components/Logo";
 
 export default function Home() {
   const [hasClientId, setHasClientId] = useState(false);
@@ -25,9 +26,18 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex flex-col items-center justify-center px-5 py-10 sm:py-12">
-      <div className="max-w-md w-full space-y-7 sm:space-y-8 text-center">
-        <div className="space-y-3">
+    <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex flex-col items-center justify-center px-5 py-10 sm:py-12 relative overflow-hidden">
+      {/* Soft brand-green radial behind the hero — the only ornamental flourish
+          on the home screen. Keeps the page from feeling like a flat dialog. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_50%_at_50%_30%,rgba(29,185,84,0.18),transparent_70%)]"
+      />
+      <div className="relative max-w-md w-full space-y-7 sm:space-y-8 text-center">
+        <div className="space-y-4">
+          <div className="flex justify-center">
+            <LogoMark size={56} />
+          </div>
           <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">Bracketeering</h1>
           <p className="text-zinc-400 text-base sm:text-lg leading-snug">
             Vote &quot;this or that&quot; on 128 of your songs. Walk away with a real

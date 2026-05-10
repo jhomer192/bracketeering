@@ -241,9 +241,14 @@ export async function searchTracks(query: string): Promise<SpotifyTrack[]> {
 /** Hydrate a list of Spotify track IDs into full track objects (for shared pool
  *  imports). Spotify caps /tracks at 50 ids per call, so batch. */
 export async function tracksByIds(ids: string[]): Promise<SpotifyTrack[]> {
+  // Defense-in-depth: even though `parseGroupParams` and `takePendingImport`
+  // both validate IDs upstream, this is the single chokepoint that builds
+  // a Spotify URL from them. Filtering here means a future caller can't
+  // accidentally let unchecked input flow into the API path.
+  const valid = ids.filter((s) => /^[A-Za-z0-9]{22}$/.test(s));
   const out: SpotifyTrack[] = [];
-  for (let i = 0; i < ids.length; i += 50) {
-    const chunk = ids.slice(i, i + 50);
+  for (let i = 0; i < valid.length; i += 50) {
+    const chunk = valid.slice(i, i + 50);
     const res = await spotifyFetch<{ tracks: Array<SpotifyTrack | null> }>(
       `/tracks?ids=${chunk.join(",")}`
     );

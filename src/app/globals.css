@@ -1,35 +1,100 @@
 @import "tailwindcss";
 
+/* ---------- Brand tokens ----------
+ *
+ * Bracketeering is dark-only by design — the compare flow and reveal page are
+ * heavy on album art, and a light theme washes that out. So `prefers-color-
+ * scheme` is intentionally ignored; the color palette is locked to dark.
+ *
+ * The palette is two-and-a-half colors:
+ *   • zinc-* for surfaces (zinc-950 page, zinc-900 cards, zinc-800 borders)
+ *   • emerald (#1DB954) for "Spotify-shaped" actions: connect, advance, save
+ *   • fuchsia for the editorial layer: quips, the verdict, sarcastic asides
+ *
+ * Tier accents (gold/silver/bronze) live in the reveal page only and never
+ * leak into the rest of the chrome. Anything else introducing a new hue is
+ * a smell — reach for a zinc shade first.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #09090b;            /* zinc-950 */
+  --surface: #18181b;       /* zinc-900 */
+  --surface-2: #27272a;     /* zinc-800 */
+  --border: #3f3f46;        /* zinc-700 */
+  --fg: #fafafa;            /* zinc-50 */
+  --fg-muted: #a1a1aa;      /* zinc-400 */
+  --fg-dim: #71717a;        /* zinc-500 */
+
+  --brand: #1db954;         /* spotify green */
+  --brand-hover: #1ed760;
+  --brand-fg: #052e16;      /* emerald-950 — the text that sits on --brand */
+
+  --accent: #e879f9;        /* fuchsia-400 — quips, verdict accent */
+  --accent-bg: #4a044e;     /* fuchsia-950 */
+
+  --gold: #f59e0b;          /* amber-500 — top 10 */
+  --silver: #d4d4d8;        /* zinc-300 — 11-25 */
+  --bronze: #b45309;        /* amber-700 — 26-50 */
+
+  --radius-pill: 9999px;
+  --radius-card: 1rem;       /* 16px */
+  --radius-control: 0.625rem; /* 10px */
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  /* Geist comes through `--font-geist-sans` set by next/font on <html>.
+     The system stack is the safety net if the woff2 fails to load — never
+     Arial first, which is what was clobbering the brand font before. */
+  font-family:
+    var(--font-geist-sans),
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 /* Mobile tap polish: kill the iOS tap-highlight halo + 300ms double-tap zoom
    delay on interactive elements. The compare screen lives or dies by tap
    responsiveness — this is the difference between a snappy feel and laggy. */
 button,
-a {
+a,
+[role="button"] {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+}
+
+/* Accessible focus ring — visible only for keyboard users. The default
+   browser ring on a dark zinc surface is nearly invisible; this lifts it. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Honor reduced-motion for the dnd-kit drag previews and tier transitions. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

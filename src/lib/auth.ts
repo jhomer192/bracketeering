@@ -148,7 +148,14 @@ export async function exchangeCodeForTokens(code: string, verifier: string): Pro
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
   });
-  if (!res.ok) throw new Error(`token exchange ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    // Drain the body so the connection is freed, but DO NOT echo it.
+    // Spotify's token endpoint occasionally reflects request fields back in
+    // error JSON; if `code_verifier` or the submitted `code` ever appear in
+    // a body that surfaces in user-facing UI, that's a credential leak.
+    await res.text().catch(() => "");
+    throw new Error(`token exchange failed (${res.status})`);
+  }
   const data = (await res.json()) as TokenResponse;
   storeTokens(data);
 }
@@ -160,10 +167,19 @@ function storeTokens(data: TokenResponse) {
   if (data.scope) localStorage.setItem(KEYS.scope, data.scope);
 }
 
-/** Pop the post-auth return path stashed by startLogin(). One-shot. */
+/** Pop the post-auth return path stashed by startLogin(). One-shot.
+ *  Restricted to same-origin in-app paths — anything else (off-origin URL,
+ *  protocol-relative `//evil`, javascript:) is rejected and the caller
+ *  falls back to its default. Today the only writers are first-party calls
+ *  passing hardcoded strings, but treating sessionStorage as untrusted
+ *  defense-in-depth keeps a future XSS stepping-stone from turning into an
+ *  open-redirect-with-token-handoff. */
 export function consumePostAuthReturn(): string | null {
   const v = sessionStorage.getItem(KEYS.postAuthReturn);
   if (v) sessionStorage.removeItem(KEYS.postAuthReturn);
+  if (!v) return null;
+  // Must start with a single `/` — rejects `//host`, `https://host`, `javascript:`.
+  if (!v.startsWith("/") || v.startsWith("//") || v.includes(":")) return null;
   return v;
 }
 
@@ -187,15 +203,23 @@ export async function getAccessToken(): Promise<string> {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
   });
-  if (!res.ok) throw new Error(`refresh ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    // Same reasoning as above — never include the refresh-endpoint body in
+    // a thrown error. The submitted `refresh_token` value is in scope here.
+    await res.text().catch(() => "");
+    throw new Error(`refresh failed (${res.status})`);
+  }
   const data = (await res.json()) as TokenResponse;
   storeTokens(data);
   return data.access_token;
 }
 
-export function setIdentity(spotifyUserId: string, displayName: string) {
+export function setIdentity(spotifyUserId: string, displayName: string | null | undefined) {
   localStorage.setItem(KEYS.spotifyUserId, spotifyUserId);
-  localStorage.setItem(KEYS.displayName, displayName);
+  // Spotify accounts can have `display_name: null`. Falling back to the user
+  // ID gives the reveal page something printable in the playlist title rather
+  // than the literal string "null".
+  localStorage.setItem(KEYS.displayName, displayName || spotifyUserId);
 }
 
 export function getSpotifyUserId(): string | null {

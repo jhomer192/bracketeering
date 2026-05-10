@@ -24,6 +24,14 @@ export type GroupParams = {
   fromIds: string[];
 };
 
+/** Spotify track IDs are exactly 22 base62 characters. Validating before we
+ *  ever join them into an API path stops a crafted handoff link from passing
+ *  arbitrary punctuation into `/tracks?ids=...` (where Spotify's error reply
+ *  might reflect it back into our UI) and bounds the URL length predictably. */
+export function isValidTrackId(s: string): boolean {
+  return /^[A-Za-z0-9]{22}$/.test(s);
+}
+
 export function parseGroupParams(search: URLSearchParams): GroupParams | null {
   const g = parseInt(search.get("g") ?? "", 10);
   const s = parseInt(search.get("s") ?? "", 10);
@@ -34,7 +42,10 @@ export function parseGroupParams(search: URLSearchParams): GroupParams | null {
   const totalSize: PoolSize = tRaw === 64 || tRaw === 128 ? (tRaw as PoolSize) : DEFAULT_TOTAL;
   const p = search.get("p") ?? "";
   const fromIds = p
-    ? p.split(",").map((x) => x.trim()).filter(Boolean)
+    ? p
+        .split(",")
+        .map((x) => x.trim())
+        .filter((x) => x && isValidTrackId(x))
     : [];
   return { groupSize: g, slotIndex: s, totalSize, fromIds };
 }
@@ -53,6 +64,13 @@ export function expectedFromCount(groupSize: number, slotIndex: number, total: n
   for (let i = 1; i < slotIndex; i++) sum += slotSize(groupSize, i, total);
   return sum;
 }
+
+/** Empirical safe ceiling for shareable URLs. iMessage/SMS/Twitter all clip
+ *  somewhere between 2KB and 4KB depending on the path; 2000 chars is the
+ *  intersection that survives every transport we care about. Spotify track
+ *  IDs are 22 base62 chars + 1 comma → ~23 chars/track, so 2000 chars
+ *  comfortably holds the ~85 IDs you'd see in slot 4 of a 4-person 128-pool. */
+export const HANDOFF_URL_SAFE_LIMIT = 2000;
 
 export function buildHandoffUrl(opts: {
   origin: string;

@@ -128,6 +128,12 @@ export default function RevealPage() {
   const [copied, setCopied] = useState(false);
   const [quips, setQuips] = useState<string[]>([]);
   const [needsReauth, setNeedsReauth] = useState(false);
+  // Spotify dev apps default to "Development Mode" with a 25-user allowlist.
+  // The dev-app OWNER is auto-added, but only if their Spotify account email
+  // matches the email on the developer account. Mismatches (or accounts the
+  // owner forgot to add) cause a 403 on playlist creation that re-auth will
+  // never fix. Surface the actionable instructions when we detect this.
+  const [devAllowlist, setDevAllowlist] = useState(false);
   // Per-tier share button state — "rendering" | "shared" | "downloaded" so
   // we can give appropriate inline confirmation feedback.
   const [cardBusy, setCardBusy] = useState(false);
@@ -305,6 +311,7 @@ export default function RevealPage() {
     if (!ranked || full128.length === 0) return;
     setBusy(true);
     setErr(null);
+    setDevAllowlist(false);
     try {
       // Export uses the (possibly user-curated) full128 so reordered tracks
       // land in the playlist in the user's order. Slice to 25 — Spotify's
@@ -313,15 +320,34 @@ export default function RevealPage() {
       setExported(res);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "export failed";
-      // Only flip to reauth on actual scope failures — Spotify echoes
-      // `insufficient_scope` / `invalid_scope` in the 401/403 body for
-      // missing-scope errors. A bare 403 (dev-mode allowlist, app quota,
-      // region) is NOT solvable by re-auth, so don't loop the user — show
-      // the actual error instead.
+      // Three distinct failure modes, each with its own remedy:
+      //
+      // 1. SCOPE — Spotify echoes `insufficient_scope` / `invalid_scope` in
+      //    the 401/403 body. Solvable by re-auth with show_dialog=true so
+      //    the user can grant the missing scope.
+      //
+      // 2. AUTH-LOST — token expired and refresh failed (`re-auth required`
+      //    or 401 with no scope hint). Same remedy as scope: re-auth.
+      //
+      // 3. DEV-ALLOWLIST — Spotify's dev-mode 403 with body matching
+      //    "User not registered in the Developer Dashboard". This is NOT
+      //    solvable by re-auth — the user has to add their Spotify account
+      //    to their dev app's user-management list. Looping them through
+      //    OAuth a hundred times will never fix this. Show explicit guidance.
+      //
+      // Anything else just surfaces the raw error.
       const isScope = /insufficient[_-]?scope|invalid[_-]?scope/i.test(msg);
-      if (isScope) {
+      const isAuthLost = /re-auth required|401(?!\d)/.test(msg);
+      const isDevAllowlist =
+        /not registered in the developer dashboard|user not registered/i.test(
+          msg,
+        );
+      if (isDevAllowlist) {
+        setDevAllowlist(true);
+        setErr(null);
+      } else if (isScope || isAuthLost) {
         setNeedsReauth(true);
-        setErr(msg); // keep the message visible so user knows what happened
+        setErr(isScope ? msg : null); // raw scope message is informative; auth-lost isn't
       } else {
         setErr(msg);
       }
@@ -363,6 +389,12 @@ export default function RevealPage() {
         tierLabel: TIER_LABELS[tier],
         tierAccent: TIER_HEX[tier],
         variant,
+        // Use the actual deploy URL so a fork's card promotes the fork, not
+        // the upstream one. Strip protocol — the card footer is just the host.
+        shareHost: `${window.location.host}${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}`.replace(
+          /\/$/,
+          "",
+        ),
       });
       const result = await shareOrDownloadCard(
         blob,
@@ -491,7 +523,32 @@ export default function RevealPage() {
         </p>
       )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+        accessibility={{
+          // Screen-reader narration for the reorder flow. Without these,
+          // VoiceOver / NVDA users get only "button" with no positional
+          // context when picking up a row. Strings are kept short because
+          // they're spoken on every keystroke during a drag.
+          screenReaderInstructions: {
+            draggable:
+              "Press space or enter to pick up a track. Use arrow keys to move. Press space or enter again to drop, or escape to cancel.",
+          },
+          announcements: {
+            onDragStart: ({ active }) => `Picked up track ${active.id}.`,
+            onDragOver: ({ active, over }) =>
+              over ? `Track ${active.id} is over position ${over.id}.` : "",
+            onDragEnd: ({ active, over }) =>
+              over
+                ? `Track ${active.id} dropped at position ${over.id}.`
+                : `Track ${active.id} returned to its original position.`,
+            onDragCancel: ({ active }) =>
+              `Reorder cancelled. Track ${active.id} returned.`,
+          },
+        }}
+      >
         <SortableContext
           items={visible.map((t) => t.id)}
           strategy={verticalListSortingStrategy}
@@ -544,7 +601,10 @@ export default function RevealPage() {
               .map((t, i) => `${i + 1}. ${t.name} — ${t.artists.map((a) => a.name).join(", ")}`)
               .join("\n");
             const header = `My ${TIER_LABELS[tier]} (Bracketeering)`;
-            const text = `${header}\n\n${list}\n\nbracketeer yours: https://jhomer192.github.io/bracketeering/`;
+            // Same reasoning as the card: derive from the live origin so a
+            // forked deploy promotes itself, not the upstream.
+            const shareUrl = `${window.location.origin}${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`;
+            const text = `${header}\n\n${list}\n\nbracketeer yours: ${shareUrl}`;
             try {
               await navigator.clipboard.writeText(text);
               setCopied(true);
@@ -560,7 +620,59 @@ export default function RevealPage() {
       </div>
 
       <section className="max-w-2xl mx-auto px-3 sm:px-4 mt-6 sm:mt-10">
-        {needsReauth && !exported ? (
+        {devAllowlist && !exported ? (
+          // Dev-mode allowlist 403 — re-auth never fixes this. Spell out the
+          // exact fix and link directly to the dashboard so the user doesn't
+          // have to hunt for it.
+          <div className="rounded-2xl border border-rose-700/60 bg-rose-950/30 p-5 space-y-3">
+            <p className="font-semibold text-rose-200">
+              Spotify rejected the save — your account isn&apos;t allowlisted on
+              your dev app
+            </p>
+            <p className="text-sm text-rose-100/85 leading-relaxed">
+              Spotify dev apps run in &ldquo;Development Mode&rdquo; with a
+              25-user allowlist. You need to add yourself by hand. One time,
+              30 seconds.
+            </p>
+            <ol className="text-sm text-rose-100/85 space-y-1.5 list-decimal pl-5">
+              <li>
+                Open the{" "}
+                <a
+                  href="https://developer.spotify.com/dashboard"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline text-rose-100 hover:text-white"
+                >
+                  Spotify Developer Dashboard
+                </a>{" "}
+                and click your Bracketeering app.
+              </li>
+              <li>
+                Settings → User Management → <b>Add New User</b>.
+              </li>
+              <li>
+                Enter the name + email of the Spotify account you&apos;re using
+                here. (It must match exactly — case-sensitive.)
+              </li>
+              <li>Come back and tap Save again.</li>
+            </ol>
+            <button
+              onClick={() => {
+                setDevAllowlist(false);
+                onExport();
+              }}
+              className="w-full h-12 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold"
+            >
+              I added myself — try again
+            </button>
+            <button
+              onClick={switchAccount}
+              className="w-full text-xs text-rose-100/70 hover:text-rose-100 underline"
+            >
+              or sign in with a different Spotify account
+            </button>
+          </div>
+        ) : needsReauth && !exported ? (
           <div className="rounded-2xl border border-amber-700/60 bg-amber-950/30 p-5 space-y-3">
             <p className="font-semibold text-amber-200">
               One more step to save to Spotify

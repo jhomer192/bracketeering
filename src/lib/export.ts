@@ -25,10 +25,20 @@ export type ExportResult = {
 export async function exportPlaylists(ranked: SpotifyTrack[]): Promise<ExportResult> {
   if (ranked.length === 0) throw new Error("nothing to export");
 
-  let userId = getSpotifyUserId();
-  if (!userId) {
+  // Always resolve identity from the live token, never from cache. If a user
+  // ever switched Spotify accounts mid-session and our callback's `/me` fetch
+  // happened to fail, the cached `bracketeering.spotify_user_id` is now from
+  // the WRONG account and POSTing to `/users/{wrongId}/playlists` 403s. The
+  // live call costs one round-trip and removes a whole class of stale-state
+  // bugs. Cache fallback only if the live call fails (offline, rate-limited).
+  let userId: string;
+  try {
     const me = await spotifyFetch<{ id: string }>("/me");
     userId = me.id;
+  } catch {
+    const cached = getSpotifyUserId();
+    if (!cached) throw new Error("could not resolve Spotify user");
+    userId = cached;
   }
 
   const top10Tracks = ranked.slice(0, Math.min(10, ranked.length));
@@ -82,8 +92,11 @@ async function createPopulatedPlaylist(
       contentType: "image/jpeg",
       body: coverBase64Jpeg,
     });
-  } catch (e) {
-    console.warn("cover upload failed:", e);
+  } catch {
+    // Cover upload is best-effort. The user may not have `ugc-image-upload`
+    // scope, the JPEG may be over Spotify's 256KB limit on some browsers, or
+    // the upload may transiently 5xx. None of those should fail the export —
+    // the playlist itself is already created above.
   }
   return { id: created.id, url: created.external_urls.spotify };
 }
