@@ -254,6 +254,91 @@ export async function tracksByIds(ids: string[]): Promise<SpotifyTrack[]> {
   return out;
 }
 
+export type PlaylistSummary = {
+  id: string;
+  name: string;
+  trackCount: number;
+  imageUrl: string | null;
+  ownerName: string;
+  isOwn: boolean;
+  collaborative: boolean;
+};
+
+/** All playlists the current user owns or follows, paginated until exhausted.
+ *  Used by the "import a playlist" UI on the pool page — the user picks one
+ *  and bulk-adds its tracks to the candidate pool to down-select from. */
+export async function listMyPlaylists(): Promise<PlaylistSummary[]> {
+  const me = await spotifyFetch<{ id: string }>("/me");
+  const out: PlaylistSummary[] = [];
+  let url: string | null = "/me/playlists?limit=50";
+  // Spotify caps each page at 50; loop on `next` until null. Hard ceiling at
+  // 1000 to avoid runaway loops on absurdly large libraries.
+  for (let safety = 0; url && safety < 20; safety++) {
+    type Page = {
+      items: Array<{
+        id: string;
+        name: string;
+        collaborative: boolean;
+        owner: { id: string; display_name?: string | null };
+        tracks: { total: number };
+        images: Array<{ url: string }> | null;
+      }>;
+      next: string | null;
+    };
+    // After page 1 the `next` URL is absolute (https://api.spotify.com/v1/...).
+    // Strip the API prefix so spotifyFetch's relative-path contract holds.
+    const path = url.startsWith("http") ? url.replace(/^https?:\/\/api\.spotify\.com\/v1/, "") : url;
+    const page: Page = await spotifyFetch<Page>(path);
+    for (const p of page.items ?? []) {
+      if (!p || !p.id) continue;
+      out.push({
+        id: p.id,
+        name: p.name,
+        trackCount: p.tracks?.total ?? 0,
+        imageUrl: p.images?.[0]?.url ?? null,
+        ownerName: p.owner?.display_name ?? "—",
+        isOwn: p.owner?.id === me.id,
+        collaborative: !!p.collaborative,
+      });
+    }
+    url = page.next;
+  }
+  return out;
+}
+
+/** All tracks in a playlist, paginated. Skips locally-owned files and
+ *  episode (podcast) entries — only Spotify-track entries are returned. */
+export async function playlistTracks(playlistId: string): Promise<SpotifyTrack[]> {
+  const fields =
+    "items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images),is_local,type)),next";
+  const out: SpotifyTrack[] = [];
+  let url: string | null =
+    `/playlists/${playlistId}/tracks?limit=100&fields=${encodeURIComponent(fields)}`;
+  // Hard ceiling at 50 pages × 100 = 5000 tracks. Spotify allows up to 10,000
+  // per playlist but pulling that many would also blow the pool-build budget.
+  for (let safety = 0; url && safety < 50; safety++) {
+    type Page = {
+      items: Array<{
+        track:
+          | (SpotifyTrack & { is_local?: boolean; type?: string })
+          | null;
+      }>;
+      next: string | null;
+    };
+    const path = url.startsWith("http") ? url.replace(/^https?:\/\/api\.spotify\.com\/v1/, "") : url;
+    const page: Page = await spotifyFetch<Page>(path);
+    for (const item of page.items ?? []) {
+      const t = item?.track;
+      if (!t || !t.id) continue;
+      if (t.is_local) continue; // local files have no streamable Spotify URI
+      if (t.type && t.type !== "track") continue; // episodes / shows
+      out.push(t);
+    }
+    url = page.next;
+  }
+  return out;
+}
+
 /** Fetch tracks from the user's own playlists. Filters out Spotify-made
  *  playlists (Daily Mix etc.) by checking owner.id === current user. Caps
  *  at 8 playlists × 100 tracks to keep API budget bounded. */

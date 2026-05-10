@@ -1,7 +1,17 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { buildPool, searchTracks, tracksByIds, trackKey, type PoolEntry, type PoolSource } from "@/lib/pool";
+import {
+  buildPool,
+  searchTracks,
+  tracksByIds,
+  trackKey,
+  listMyPlaylists,
+  playlistTracks,
+  type PoolEntry,
+  type PoolSource,
+  type PlaylistSummary,
+} from "@/lib/pool";
 import { isAuthed } from "@/lib/auth";
 import type { SpotifyTrack } from "@/lib/spotify";
 import {
@@ -252,6 +262,65 @@ export default function PoolPage() {
         if (composition && mode.kind !== "group") saveBuiltPool(next, composition);
         return next;
       });
+    },
+    [composition, mode.kind]
+  );
+
+  /** Bulk-add for playlist imports — one setPool call regardless of how
+   *  many tracks. Returns counts so the caller can show "added 47 of 80"
+   *  feedback (the rest were dupes / cross-release dupes / already in pool).
+   *  Also un-removes any IDs that the user previously tap-deselected, so
+   *  re-importing a playlist after a partial down-select restores them. */
+  const addManyManual = useCallback(
+    (tracks: SpotifyTrack[]): { added: number; restored: number; skipped: number } => {
+      let added = 0;
+      let restored = 0;
+      let skipped = 0;
+      setPool((prev) => {
+        if (!prev) return prev;
+        const byId = new Set(prev.map((p) => p.id));
+        const byKey = new Set(prev.map((p) => trackKey(p)));
+        const restoreIds = new Set<string>();
+        const fresh: PoolEntry[] = [];
+        for (const t of tracks) {
+          if (!t || !t.id) {
+            skipped++;
+            continue;
+          }
+          if (byId.has(t.id)) {
+            // Already in pool — restore it if it was deselected, else skip.
+            restoreIds.add(t.id);
+            continue;
+          }
+          const k = trackKey(t);
+          if (byKey.has(k)) {
+            skipped++;
+            continue;
+          }
+          byId.add(t.id);
+          byKey.add(k);
+          fresh.push({ ...t, source: "manual" });
+        }
+        added = fresh.length;
+        if (restoreIds.size > 0) {
+          setRemoved((r) => {
+            let changed = false;
+            const n = new Set(r);
+            for (const id of restoreIds) {
+              if (n.delete(id)) {
+                changed = true;
+                restored++;
+              }
+            }
+            return changed ? n : r;
+          });
+        }
+        if (fresh.length === 0) return prev;
+        const next = [...fresh, ...prev];
+        if (composition && mode.kind !== "group") saveBuiltPool(next, composition);
+        return next;
+      });
+      return { added, restored, skipped };
     },
     [composition, mode.kind]
   );
@@ -599,6 +668,7 @@ export default function PoolPage() {
           onPick={(t) => {
             addManual(t);
           }}
+          onImport={(tracks) => addManyManual(tracks)}
           existingIds={new Set([...myKept.map((p) => p.id), ...friendTracks.map((p) => p.id)])}
         />
       )}
@@ -858,9 +928,69 @@ function ShareButton({ kept }: { kept: PoolEntry[] }) {
 function SearchModal({
   onClose,
   onPick,
+  onImport,
   existingIds,
 }: {
   onClose: () => void;
+  onPick: (track: SpotifyTrack) => void;
+  onImport: (tracks: SpotifyTrack[]) => { added: number; restored: number; skipped: number };
+  existingIds: Set<string>;
+}) {
+  const [tab, setTab] = useState<"search" | "playlist">("search");
+
+  return (
+    <div className="fixed inset-0 z-30 bg-zinc-950/95 backdrop-blur flex flex-col">
+      <div className="flex-none border-b border-zinc-800">
+        <div className="max-w-3xl mx-auto px-3 pt-2 pb-2 flex items-center justify-between gap-2">
+          {/* Tab toggle — Search by song name vs Import a whole playlist. */}
+          <div
+            role="tablist"
+            aria-label="Add to pool from"
+            className="inline-flex items-center gap-1 p-1 rounded-full border border-zinc-800 bg-zinc-900/60"
+          >
+            <button
+              role="tab"
+              aria-selected={tab === "search"}
+              onClick={() => setTab("search")}
+              className={`text-xs sm:text-sm font-medium px-3 sm:px-3.5 h-8 rounded-full transition ${
+                tab === "search" ? "bg-zinc-50 text-black" : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Search
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === "playlist"}
+              onClick={() => setTab("playlist")}
+              className={`text-xs sm:text-sm font-medium px-3 sm:px-3.5 h-8 rounded-full transition ${
+                tab === "playlist" ? "bg-zinc-50 text-black" : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Playlist
+            </button>
+          </div>
+          <button
+            onClick={onClose}
+            className="h-9 px-4 rounded-lg bg-zinc-800 active:bg-zinc-700 text-sm font-medium"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+
+      {tab === "search" ? (
+        <SearchTab onPick={onPick} existingIds={existingIds} />
+      ) : (
+        <PlaylistTab onImport={onImport} existingIds={existingIds} />
+      )}
+    </div>
+  );
+}
+
+function SearchTab({
+  onPick,
+  existingIds,
+}: {
   onPick: (track: SpotifyTrack) => void;
   existingIds: Set<string>;
 }) {
@@ -901,9 +1031,9 @@ function SearchModal({
   }, [q]);
 
   return (
-    <div className="fixed inset-0 z-30 bg-zinc-950/95 backdrop-blur flex flex-col">
-      <div className="flex-none border-b border-zinc-800">
-        <div className="max-w-3xl mx-auto px-3 py-2 flex items-center gap-2">
+    <>
+      <div className="flex-none border-b border-zinc-900">
+        <div className="max-w-3xl mx-auto px-3 py-2">
           <input
             ref={inputRef}
             value={q}
@@ -912,14 +1042,8 @@ function SearchModal({
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            className="flex-1 h-11 rounded-lg bg-zinc-900 border border-zinc-800 px-3 text-sm focus:outline-none focus:border-zinc-600"
+            className="w-full h-11 rounded-lg bg-zinc-900 border border-zinc-800 px-3 text-sm focus:outline-none focus:border-zinc-600"
           />
-          <button
-            onClick={onClose}
-            className="h-11 px-4 rounded-lg bg-zinc-800 active:bg-zinc-700 text-sm font-medium"
-          >
-            Done
-          </button>
         </div>
       </div>
 
@@ -983,6 +1107,166 @@ function SearchModal({
           </ul>
         </div>
       </div>
+    </>
+  );
+}
+
+function PlaylistTab({
+  onImport,
+  existingIds,
+}: {
+  onImport: (tracks: SpotifyTrack[]) => { added: number; restored: number; skipped: number };
+  existingIds: Set<string>;
+}) {
+  const [playlists, setPlaylists] = useState<PlaylistSummary[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [importing, setImporting] = useState<string | null>(null); // id currently importing
+  // Per-playlist toast: counts after most recent import. Sticks until the
+  // user navigates away or imports the same playlist again.
+  const [imported, setImported] = useState<
+    Record<string, { added: number; restored: number; skipped: number; total: number }>
+  >({});
+  const [filter, setFilter] = useState("");
+
+  useEffect(() => {
+    let cancel = false;
+    listMyPlaylists()
+      .then((items) => {
+        if (cancel) return;
+        setPlaylists(items);
+      })
+      .catch((e) => {
+        if (cancel) return;
+        setErr(e instanceof Error ? e.message : "couldn't load playlists");
+      });
+    return () => {
+      cancel = true;
+    };
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!playlists) return [];
+    const q = filter.trim().toLowerCase();
+    if (!q) return playlists;
+    return playlists.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.ownerName.toLowerCase().includes(q),
+    );
+  }, [playlists, filter]);
+
+  async function importPlaylist(p: PlaylistSummary) {
+    if (importing) return;
+    setImporting(p.id);
+    setErr(null);
+    try {
+      const tracks = await playlistTracks(p.id);
+      const result = onImport(tracks);
+      setImported((prev) => ({
+        ...prev,
+        [p.id]: { ...result, total: tracks.length },
+      }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "import failed");
+    } finally {
+      setImporting(null);
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto pb-[max(2rem,env(safe-area-inset-bottom))]">
+      <div className="max-w-3xl mx-auto px-3 pt-3">
+        <p className="text-zinc-500 text-xs px-1 mb-2 leading-snug">
+          Tap a playlist to bulk-add every song. Then tap any song in your pool to deselect it
+          before voting.
+        </p>
+        {playlists && playlists.length > 8 && (
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter playlists…"
+            className="w-full h-10 rounded-lg bg-zinc-900 border border-zinc-800 px-3 text-sm mb-3 focus:outline-none focus:border-zinc-600"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        )}
+        {err && (
+          <div className="rounded-lg border border-red-700/60 bg-red-950/40 px-3 py-2 text-xs text-red-200 mb-3 break-all">
+            {err}
+          </div>
+        )}
+        {!playlists && !err && (
+          <div className="text-center text-zinc-500 text-sm py-8">Loading your playlists…</div>
+        )}
+        {playlists && playlists.length === 0 && !err && (
+          <div className="text-center text-zinc-500 text-sm py-8">
+            No playlists found on your Spotify account.
+          </div>
+        )}
+
+        <ul className="space-y-1.5 mt-1">
+          {filtered.map((p) => {
+            const isImporting = importing === p.id;
+            const result = imported[p.id];
+            return (
+              <li key={p.id}>
+                <button
+                  disabled={isImporting}
+                  onClick={() => importPlaylist(p)}
+                  className="w-full flex items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-1.5 pr-3 text-left transition active:scale-[0.99] active:border-emerald-500 disabled:opacity-60"
+                >
+                  {p.imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={p.imageUrl}
+                      alt=""
+                      className="w-11 h-11 rounded-md object-cover flex-none"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-md bg-zinc-800 flex-none" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-sm leading-tight truncate">{p.name}</div>
+                    <div className="text-[11px] text-zinc-500 leading-tight truncate mt-0.5">
+                      {p.trackCount} {p.trackCount === 1 ? "track" : "tracks"}
+                      {p.isOwn ? " · yours" : ` · ${p.ownerName}`}
+                      {p.collaborative ? " · collab" : ""}
+                    </div>
+                  </div>
+                  <span className="text-[11px] flex-none text-emerald-400">
+                    {isImporting
+                      ? "importing…"
+                      : result
+                        ? result.added + result.restored > 0
+                          ? `+${result.added + result.restored} ✓`
+                          : "all in pool ✓"
+                        : "+ import"}
+                  </span>
+                </button>
+                {result && (
+                  <div className="text-[10px] text-zinc-500 mt-1 px-2 leading-snug">
+                    {summarizeImport(result)}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </div>
   );
+  // existingIds is intentionally unused in the per-row UI — the
+  // bulk-import addManyManual call already handles dedupe and
+  // un-removal, and surfacing per-row "in pool" state for hundreds
+  // of tracks would just be noise. The summary toast tells the
+  // user how many were new vs already-present.
+  void existingIds;
+}
+
+function summarizeImport(r: { added: number; restored: number; skipped: number; total: number }): string {
+  const parts: string[] = [];
+  if (r.added) parts.push(`${r.added} added`);
+  if (r.restored) parts.push(`${r.restored} restored`);
+  if (r.skipped) parts.push(`${r.skipped} dupes`);
+  if (parts.length === 0) parts.push("nothing new — all already in pool");
+  return `${parts.join(" · ")} (of ${r.total})`;
 }
