@@ -1,9 +1,35 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  TouchSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { trackKey, type PoolEntry } from "@/lib/pool";
 import { FLOOR } from "@/lib/compare";
-import { loadKeptPool, loadRanked, saveRanked, clearRunState } from "@/lib/storage";
+import {
+  loadKeptPool,
+  loadRanked,
+  saveRanked,
+  clearRunState,
+  loadFullOrdering,
+  saveFullOrdering,
+  clearFullOrdering,
+} from "@/lib/storage";
 import { exportPlaylists, type ExportResult } from "@/lib/export";
 import { isAuthed, hasExportScopes, startLogin, logout } from "@/lib/auth";
 import { getQuips } from "@/lib/quips";
@@ -106,6 +132,13 @@ export default function RevealPage() {
   // we can give appropriate inline confirmation feedback.
   const [cardBusy, setCardBusy] = useState(false);
   const [cardStatus, setCardStatus] = useState<null | "shared" | "downloaded">(null);
+  // Reorder mode: when on, the list is drag-sortable. The curated order
+  // persists to localStorage and overrides the default vote+tail stitch
+  // on subsequent loads. Drag-and-drop only — read-only mode just renders
+  // the same list without drag handles, so the layout stays identical.
+  const [reorderMode, setReorderMode] = useState(false);
+  const [full128, setFull128] = useState<PoolEntry[]>([]);
+  const [hasCuratedOrder, setHasCuratedOrder] = useState(false);
 
   useEffect(() => {
     if (!isAuthed()) {
@@ -138,22 +171,69 @@ export default function RevealPage() {
     }
     setRanked(healed);
     setKeptPool(kept);
-    setQuips(getQuips(healed, 2));
+
+    // Default 128 ordering: vote-decided top 25 then the rest of the kept
+    // pool (sans top-25 dups) in pool order — best-Spotify-signal-first.
+    let stitched: PoolEntry[];
+    if (!kept) {
+      stitched = healed;
+    } else {
+      const rankedIds = new Set(healed.map((t) => t.id));
+      const tail = kept.filter((t) => !rankedIds.has(t.id));
+      stitched = [...healed, ...tail].slice(0, 128);
+    }
+
+    // Apply user-curated ordering if one was saved. Map IDs → entries from
+    // the stitched list. Any IDs in the saved order that no longer exist
+    // (e.g. user rebuilt the pool) are dropped; any new entries not in the
+    // saved order get appended at the end so nothing silently disappears.
+    const curated = loadFullOrdering();
+    if (curated && curated.length > 0) {
+      const byId = new Map(stitched.map((t) => [t.id, t]));
+      const reordered: PoolEntry[] = [];
+      const seen = new Set<string>();
+      for (const id of curated) {
+        const t = byId.get(id);
+        if (t && !seen.has(id)) {
+          reordered.push(t);
+          seen.add(id);
+        }
+      }
+      for (const t of stitched) {
+        if (!seen.has(t.id)) reordered.push(t);
+      }
+      setFull128(reordered);
+      setHasCuratedOrder(true);
+    } else {
+      setFull128(stitched);
+      setHasCuratedOrder(false);
+    }
+
+    // Quips reflect the displayed top 25, which is the curated order if
+    // present (so reroll-after-reorder roasts the new top picks).
+    const top25 = (curated && curated.length > 0
+      ? (() => {
+          const byId = new Map(stitched.map((t) => [t.id, t]));
+          const out: PoolEntry[] = [];
+          const seen = new Set<string>();
+          for (const id of curated) {
+            const t = byId.get(id);
+            if (t && !seen.has(id)) {
+              out.push(t);
+              seen.add(id);
+            }
+            if (out.length >= 25) break;
+          }
+          return out;
+        })()
+      : healed
+    ).slice(0, 25);
+    setQuips(getQuips(top25, 2));
+
     // Pre-flight: tokens predating any scope addition will 403 mid-export.
     // Surface a reconnect CTA up front instead of a confusing error later.
     if (!hasExportScopes()) setNeedsReauth(true);
   }, [basePath]);
-
-  // Stitch a full 128 ordering: vote-decided top 25, then the rest of the
-  // kept pool (sans top-25 dups) in their pool order — which is best-
-  // Spotify-signal-first by build construction. Bounded to 128.
-  const full128 = useMemo<PoolEntry[]>(() => {
-    if (!ranked) return [];
-    if (!keptPool) return ranked;
-    const rankedIds = new Set(ranked.map((t) => t.id));
-    const tail = keptPool.filter((t) => !rankedIds.has(t.id));
-    return [...ranked, ...tail].slice(0, 128);
-  }, [ranked, keptPool]);
 
   const limit = TIER_LIMITS[tier];
   // Cap the picker at how many entries we actually have — if the pool was
@@ -162,6 +242,49 @@ export default function RevealPage() {
     () => TIER_ORDER.filter((t) => TIER_LIMITS[t] <= Math.max(10, full128.length)),
     [full128.length],
   );
+
+  // Sensors: pointer for mouse, touch for finger (with a small activation
+  // distance so taps to scroll the list don't initiate a drag), keyboard
+  // for accessibility.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      setFull128((items) => {
+        const oldIndex = items.findIndex((t) => t.id === active.id);
+        const newIndex = items.findIndex((t) => t.id === over.id);
+        if (oldIndex < 0 || newIndex < 0) return items;
+        const reordered = arrayMove(items, oldIndex, newIndex);
+        // Persist immediately so refresh / nav-back keeps the order.
+        saveFullOrdering(reordered.map((t) => t.id));
+        setHasCuratedOrder(true);
+        // Re-roll quips against the new top 25 so the verdict matches what
+        // the user is now showing as their best.
+        setQuips(getQuips(reordered.slice(0, 25), 2));
+        return reordered;
+      });
+    },
+    [],
+  );
+
+  function resetOrder() {
+    if (!ranked) return;
+    if (!confirm("Reset to your voted ranking? Your manual reorder will be lost.")) return;
+    clearFullOrdering();
+    // Recompute the default vote+tail stitch from the current state.
+    const rankedIds = new Set(ranked.map((t) => t.id));
+    const tail = (keptPool ?? []).filter((t) => !rankedIds.has(t.id));
+    const stitched = [...ranked, ...tail].slice(0, 128);
+    setFull128(stitched);
+    setHasCuratedOrder(false);
+    setQuips(getQuips(stitched.slice(0, 25), 2));
+  }
 
   if (missing) {
     return (
@@ -179,11 +302,14 @@ export default function RevealPage() {
   if (!ranked) return <Loading />;
 
   async function onExport() {
-    if (!ranked) return;
+    if (!ranked || full128.length === 0) return;
     setBusy(true);
     setErr(null);
     try {
-      const res = await exportPlaylists(ranked);
+      // Export uses the (possibly user-curated) full128 so reordered tracks
+      // land in the playlist in the user's order. Slice to 25 — Spotify's
+      // Top 25 + Top 10 playlists are still the export shape.
+      const res = await exportPlaylists(full128.slice(0, 25));
       setExported(res);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "export failed";
@@ -262,10 +388,13 @@ export default function RevealPage() {
             Your {TIER_LABELS[tier]}
           </h1>
           <p className="text-zinc-500 text-xs sm:text-sm mt-1">
-            Top {ranked.length} vote-decided
-            {full128.length > ranked.length
-              ? ` · ${full128.length - ranked.length} more by Spotify signal`
-              : ""}
+            {hasCuratedOrder
+              ? `Hand-curated · ${full128.length} tracks`
+              : `Top ${ranked.length} vote-decided${
+                  full128.length > ranked.length
+                    ? ` · ${full128.length - ranked.length} more by Spotify signal`
+                    : ""
+                }`}
           </p>
         </div>
       </header>
@@ -309,7 +438,7 @@ export default function RevealPage() {
                 The Verdict
               </span>
               <button
-                onClick={() => ranked && setQuips(getQuips(ranked, 2))}
+                onClick={() => full128.length > 0 && setQuips(getQuips(full128.slice(0, 25), 2))}
                 aria-label="Get a fresh roast"
                 className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 hover:text-fuchsia-300 transition px-2 py-0.5 rounded-full border border-zinc-800 hover:border-fuchsia-700/60"
               >
@@ -331,59 +460,63 @@ export default function RevealPage() {
         </section>
       )}
 
-      <ol className="max-w-2xl mx-auto px-3 sm:px-4 mt-4 sm:mt-6 space-y-1.5">
-        {visible.map((t, i) => {
-          const rank = i + 1;
-          const rowTier = tierFor(rank);
-          const style = TIER_STYLES[rowTier];
-          // Tier divider — render once, just before the first row of a new tier.
-          const prevTier = i === 0 ? null : tierFor(i);
-          const isFirstOfTier = prevTier !== rowTier;
-          return (
-            <li key={t.id} className="contents">
-              {isFirstOfTier && (
-                <div
-                  aria-hidden
-                  className="flex items-center gap-3 pt-3 pb-1 first:pt-0"
-                >
-                  <span
-                    className={`text-[10px] uppercase tracking-[0.22em] font-semibold ${style.label}`}
-                  >
-                    {style.tone}
-                  </span>
-                  <span className="flex-1 h-px bg-zinc-800" />
-                </div>
-              )}
-              <div
-                className={`flex items-center gap-2.5 rounded-lg border ${style.border} ${style.bg} p-1.5 pr-3`}
-              >
-                <div
-                  className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-mono text-[11px] sm:text-xs tabular-nums font-semibold flex-none ${style.medallion}`}
-                  aria-label={`Rank ${rank}`}
-                >
-                  {rank}
-                </div>
-                {t.album.images?.[0]?.url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={t.album.images[0].url}
-                    alt=""
-                    className="w-11 h-11 sm:w-12 sm:h-12 rounded-md object-cover flex-none"
-                  />
-                ) : (
-                  <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-md bg-zinc-800 flex-none" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium text-sm leading-tight truncate">{t.name}</div>
-                  <div className="text-[11px] sm:text-xs text-zinc-500 leading-tight truncate mt-0.5">
-                    {t.artists.map((a) => a.name).join(", ")}
-                  </div>
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+      {/* Reorder toolbar — sits just above the list. The mode toggle is the
+          primary action; reset only shows up once a curated order exists. */}
+      <div className="max-w-2xl mx-auto px-3 sm:px-4 mt-4 flex items-center justify-between gap-3">
+        <button
+          onClick={() => setReorderMode((v) => !v)}
+          aria-pressed={reorderMode}
+          className={`text-xs uppercase tracking-[0.18em] font-semibold px-3 h-8 rounded-full transition border ${
+            reorderMode
+              ? "bg-emerald-500 text-black border-emerald-400"
+              : "text-zinc-400 hover:text-zinc-200 border-zinc-800 hover:border-zinc-600"
+          }`}
+        >
+          {reorderMode ? "done" : "reorder"}
+        </button>
+        {hasCuratedOrder && (
+          <button
+            onClick={resetOrder}
+            className="text-[11px] text-zinc-500 hover:text-zinc-300 underline"
+          >
+            reset to voted order
+          </button>
+        )}
+      </div>
+      {reorderMode && (
+        <p className="max-w-2xl mx-auto px-4 mt-2 text-[11px] text-zinc-500 leading-snug">
+          Drag any row by its grip to move it. Switch tiers above to reorder
+          deeper into the list. Saves automatically — Spotify export uses
+          your order.
+        </p>
+      )}
+
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext
+          items={visible.map((t) => t.id)}
+          strategy={verticalListSortingStrategy}
+        >
+          <ol className="max-w-2xl mx-auto px-3 sm:px-4 mt-3 sm:mt-4 space-y-1.5">
+            {visible.map((t, i) => {
+              const rank = i + 1;
+              const rowTier = tierFor(rank);
+              const style = TIER_STYLES[rowTier];
+              const prevTier = i === 0 ? null : tierFor(i);
+              const isFirstOfTier = prevTier !== rowTier;
+              return (
+                <SortableRow
+                  key={t.id}
+                  track={t}
+                  rank={rank}
+                  style={style}
+                  isFirstOfTier={isFirstOfTier}
+                  reorderMode={reorderMode}
+                />
+              );
+            })}
+          </ol>
+        </SortableContext>
+      </DndContext>
 
       <div className="max-w-2xl mx-auto px-4 mt-3 flex items-center gap-4 flex-wrap">
         {/* Image-card export — generates a 1080×1920 PNG of the current tier.
@@ -510,5 +643,114 @@ function Loading() {
     <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex items-center justify-center">
       <div className="text-zinc-400">Loading…</div>
     </main>
+  );
+}
+
+type RowStyle = {
+  border: string;
+  bg: string;
+  medallion: string;
+  label: string;
+  tone: string;
+};
+
+/** A single ranked row that participates in dnd-kit's sortable list. The
+ *  visual layout matches the read-only row 1:1 — the only difference in
+ *  reorder mode is a grip handle on the right and the row gets the drag
+ *  listeners. Outside reorder mode, drag listeners are not attached so
+ *  scrolling on touch is unaffected. */
+function SortableRow({
+  track,
+  rank,
+  style,
+  isFirstOfTier,
+  reorderMode,
+}: {
+  track: PoolEntry;
+  rank: number;
+  style: RowStyle;
+  isFirstOfTier: boolean;
+  reorderMode: boolean;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: track.id, disabled: !reorderMode });
+
+  const dragStyle: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    // Lifted-card affordance — make the active row pop above its neighbors
+    // so drop targets read clearly even on a dense list.
+    zIndex: isDragging ? 30 : undefined,
+    opacity: isDragging ? 0.92 : 1,
+    // Touch needs explicit none during drag so the page doesn't scroll out
+    // from under the user mid-reorder.
+    touchAction: reorderMode ? "none" : undefined,
+  };
+
+  return (
+    <li ref={setNodeRef} style={dragStyle} className="contents">
+      {isFirstOfTier && (
+        <div aria-hidden className="flex items-center gap-3 pt-3 pb-1 first:pt-0">
+          <span
+            className={`text-[10px] uppercase tracking-[0.22em] font-semibold ${style.label}`}
+          >
+            {style.tone}
+          </span>
+          <span className="flex-1 h-px bg-zinc-800" />
+        </div>
+      )}
+      <div
+        className={`flex items-center gap-2.5 rounded-lg border ${style.border} ${style.bg} p-1.5 pr-3 ${
+          isDragging ? "shadow-2xl shadow-emerald-500/20 ring-1 ring-emerald-500/40" : ""
+        }`}
+      >
+        <div
+          className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-mono text-[11px] sm:text-xs tabular-nums font-semibold flex-none ${style.medallion}`}
+          aria-label={`Rank ${rank}`}
+        >
+          {rank}
+        </div>
+        {track.album.images?.[0]?.url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={track.album.images[0].url}
+            alt=""
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-md object-cover flex-none"
+          />
+        ) : (
+          <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-md bg-zinc-800 flex-none" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-sm leading-tight truncate">{track.name}</div>
+          <div className="text-[11px] sm:text-xs text-zinc-500 leading-tight truncate mt-0.5">
+            {track.artists.map((a) => a.name).join(", ")}
+          </div>
+        </div>
+        {reorderMode && (
+          <button
+            type="button"
+            aria-label={`Drag to reorder ${track.name}`}
+            className="flex-none w-9 h-9 -mr-1 flex items-center justify-center text-zinc-400 hover:text-zinc-200 cursor-grab active:cursor-grabbing select-none touch-none"
+            {...attributes}
+            {...listeners}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden focusable="false">
+              <circle cx="5" cy="3" r="1.4" fill="currentColor" />
+              <circle cx="11" cy="3" r="1.4" fill="currentColor" />
+              <circle cx="5" cy="8" r="1.4" fill="currentColor" />
+              <circle cx="11" cy="8" r="1.4" fill="currentColor" />
+              <circle cx="5" cy="13" r="1.4" fill="currentColor" />
+              <circle cx="11" cy="13" r="1.4" fill="currentColor" />
+            </svg>
+          </button>
+        )}
+      </div>
+    </li>
   );
 }

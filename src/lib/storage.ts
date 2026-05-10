@@ -29,6 +29,11 @@ const KEYS = {
   kept: "bracketeering.kept_pool",
   compare: "bracketeering.compare_state",
   ranked: "bracketeering.ranked",
+  /** User-curated final ordering on the reveal page. List of track IDs in
+   *  order. When set, takes precedence over the default vote+tail stitch.
+   *  Stored separately from `ranked` so re-running compare doesn't clobber
+   *  manual reorders, and so the heal-on-load logic only touches `ranked`. */
+  fullOrdering: "bracketeering.full_ordering",
   /** Shared-pool import queued before login. Comma-sep Spotify track IDs. */
   pendingImport: "bracketeering.pending_import",
   /** User's chosen pool size (64 or 128). Persists across sessions so the
@@ -101,11 +106,33 @@ export function loadRanked(): PoolEntry[] | null {
   return s ? dedupePool(JSON.parse(s) as PoolEntry[]) : null;
 }
 
+/** Persist the user's hand-curated final ordering (list of track IDs).
+ *  Reveal page applies this on top of the default vote+tail stitch so
+ *  reorders survive reloads, and the Spotify export uses this order. */
+export function saveFullOrdering(ids: string[]) {
+  localStorage.setItem(KEYS.fullOrdering, JSON.stringify(ids));
+}
+export function loadFullOrdering(): string[] | null {
+  const s = localStorage.getItem(KEYS.fullOrdering);
+  if (!s) return null;
+  try {
+    const arr = JSON.parse(s);
+    if (!Array.isArray(arr)) return null;
+    return arr.filter((x): x is string => typeof x === "string");
+  } catch {
+    return null;
+  }
+}
+export function clearFullOrdering() {
+  localStorage.removeItem(KEYS.fullOrdering);
+}
+
 export function clearRunState() {
   localStorage.removeItem(KEYS.builtPool);
   localStorage.removeItem(KEYS.builtComposition);
   localStorage.removeItem(KEYS.kept);
   localStorage.removeItem(KEYS.compare);
   localStorage.removeItem(KEYS.ranked);
+  localStorage.removeItem(KEYS.fullOrdering);
   localStorage.removeItem(KEYS.pendingImport);
 }
