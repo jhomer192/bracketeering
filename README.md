@@ -32,8 +32,9 @@ npm run dev
 
 1. Go to <https://developer.spotify.com/dashboard>
 2. Create app → name "Bracketeering"
-3. Redirect URIs: add `http://localhost:3000/api/spotify/callback` for dev,
-   plus the Vercel preview/prod URLs once deployed
+3. Redirect URIs: add `http://127.0.0.1:3000/api/spotify/callback` for dev
+   (Spotify rejects `http://localhost` since Apr 2025), plus the Vercel
+   preview/prod URLs once deployed
 4. Copy Client ID + Client Secret into `.env.local`
 
 ### Supabase
@@ -64,7 +65,7 @@ Uses the shared side-projects database. All tables prefixed with
 
 ```bash
 npm run dev
-# open http://localhost:3000
+# open http://127.0.0.1:3000 (Spotify OAuth requires 127.0.0.1, not localhost)
 ```
 
 First Spotify connect builds the pool in ~5 sec. After that it's instant.
