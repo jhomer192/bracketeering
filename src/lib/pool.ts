@@ -6,7 +6,7 @@
 
 import { spotifyFetch, type SpotifyTrack, type SpotifyArtist } from "./spotify";
 
-export type PoolSource = "short_term" | "recently_played" | "long_term" | "saved_early" | "genre_fill";
+export type PoolSource = "short_term" | "recently_played" | "long_term" | "saved_early" | "genre_fill" | "manual";
 
 export type PoolEntry = SpotifyTrack & {
   source: PoolSource;
@@ -92,7 +92,7 @@ export async function buildPool(): Promise<{
       acc[t.source] = (acc[t.source] ?? 0) + 1;
       return acc;
     },
-    { short_term: 0, recently_played: 0, long_term: 0, saved_early: 0, genre_fill: 0 }
+    { short_term: 0, recently_played: 0, long_term: 0, saved_early: 0, genre_fill: 0, manual: 0 }
   );
 
   return { pool, composition };
@@ -132,4 +132,15 @@ async function fillFromGenres(
     }
   }
   return out;
+}
+
+/** Free-text track search for the "add a song" UI. Returns top 10 hits. */
+export async function searchTracks(query: string): Promise<SpotifyTrack[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const enc = encodeURIComponent(q);
+  const res = await spotifyFetch<{ tracks: { items: SpotifyTrack[] } }>(
+    `/search?q=${enc}&type=track&limit=10`
+  );
+  return res.tracks.items ?? [];
 }

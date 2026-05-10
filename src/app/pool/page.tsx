@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { buildPool, type PoolEntry, type PoolSource } from "@/lib/pool";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { buildPool, searchTracks, type PoolEntry, type PoolSource } from "@/lib/pool";
 import { isAuthed } from "@/lib/auth";
+import type { SpotifyTrack } from "@/lib/spotify";
 import {
   saveKeptPool,
   clearCompareState,
@@ -19,6 +20,7 @@ const SOURCE_DOT: Record<PoolSource, string> = {
   long_term: "bg-purple-500",
   saved_early: "bg-purple-500",
   genre_fill: "bg-zinc-500",
+  manual: "bg-emerald-400",
 };
 
 export default function PoolPage() {
@@ -26,6 +28,7 @@ export default function PoolPage() {
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [composition, setComposition] = useState<Record<PoolSource, number> | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -69,6 +72,27 @@ export default function PoolPage() {
       return next;
     });
   }, []);
+
+  const addManual = useCallback((track: SpotifyTrack) => {
+    setPool((prev) => {
+      if (!prev) return prev;
+      // If the track is already in the pool, just un-remove it instead of dup.
+      if (prev.some((p) => p.id === track.id)) {
+        setRemoved((r) => {
+          if (!r.has(track.id)) return r;
+          const n = new Set(r);
+          n.delete(track.id);
+          return n;
+        });
+        return prev;
+      }
+      const entry: PoolEntry = { ...track, source: "manual" };
+      const next = [entry, ...prev];
+      // Persist to cache so a refresh keeps the manually-added song.
+      if (composition) saveBuiltPool(next, composition);
+      return next;
+    });
+  }, [composition]);
 
   if (error) {
     return (
@@ -180,17 +204,12 @@ export default function PoolPage() {
 
       <footer className="fixed inset-x-0 bottom-0 bg-zinc-950/95 backdrop-blur border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
         <div className="max-w-3xl mx-auto px-3 py-2.5 flex items-center justify-between gap-2">
-          <div className="text-[11px] text-zinc-500 leading-tight">
-            Tap to remove
-            <div className="mt-0.5 inline-flex items-center gap-2">
-              <span className="inline-flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-orange-500" />recent
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-purple-500" />all-time
-              </span>
-            </div>
-          </div>
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="h-12 px-4 rounded-full bg-zinc-800 active:bg-zinc-700 text-zinc-100 font-semibold flex-none text-sm"
+          >
+            + Add
+          </button>
           <button
             disabled={!ready}
             className={`h-12 px-6 rounded-full font-semibold flex-none ${
@@ -207,6 +226,150 @@ export default function PoolPage() {
           </button>
         </div>
       </footer>
+
+      {searchOpen && (
+        <SearchModal
+          onClose={() => setSearchOpen(false)}
+          onPick={(t) => {
+            addManual(t);
+          }}
+          existingIds={new Set(kept.map((p) => p.id))}
+        />
+      )}
     </main>
+  );
+}
+
+function SearchModal({
+  onClose,
+  onPick,
+  existingIds,
+}: {
+  onClose: () => void;
+  onPick: (track: SpotifyTrack) => void;
+  existingIds: Set<string>;
+}) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<SpotifyTrack[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
+  const inputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Debounced live search — fires 350ms after the last keystroke so we don't
+  // hammer Spotify's /search endpoint while the user is still typing.
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!q.trim()) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const items = await searchTracks(q);
+        setResults(items);
+        setErr(null);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "search failed");
+      } finally {
+        setLoading(false);
+      }
+    }, 350);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [q]);
+
+  return (
+    <div className="fixed inset-0 z-30 bg-zinc-950/95 backdrop-blur flex flex-col">
+      <div className="flex-none border-b border-zinc-800">
+        <div className="max-w-3xl mx-auto px-3 py-2 flex items-center gap-2">
+          <input
+            ref={inputRef}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search song or artist…"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            className="flex-1 h-11 rounded-lg bg-zinc-900 border border-zinc-800 px-3 text-sm focus:outline-none focus:border-zinc-600"
+          />
+          <button
+            onClick={onClose}
+            className="h-11 px-4 rounded-lg bg-zinc-800 active:bg-zinc-700 text-sm font-medium"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto pb-[max(2rem,env(safe-area-inset-bottom))]">
+        <div className="max-w-3xl mx-auto px-3 pt-2">
+          {err && (
+            <div className="rounded-lg border border-red-700/60 bg-red-950/40 px-3 py-2 text-xs text-red-200 mb-3 break-all">
+              {err}
+            </div>
+          )}
+          {loading && results.length === 0 && (
+            <div className="text-center text-zinc-500 text-sm py-8">Searching…</div>
+          )}
+          {!loading && q.trim() && results.length === 0 && !err && (
+            <div className="text-center text-zinc-500 text-sm py-8">No matches.</div>
+          )}
+          {!q.trim() && (
+            <p className="text-zinc-500 text-xs px-1 pt-2">
+              Type a song or &ldquo;song artist&rdquo;. Tap a result to add it to your 128.
+            </p>
+          )}
+          <ul className="space-y-1.5 mt-2">
+            {results.map((t) => {
+              const inPool = existingIds.has(t.id) || justAdded.has(t.id);
+              const art = t.album.images?.[0]?.url ?? "";
+              return (
+                <li key={t.id}>
+                  <button
+                    disabled={inPool}
+                    onClick={() => {
+                      onPick(t);
+                      setJustAdded((s) => new Set(s).add(t.id));
+                    }}
+                    className={`w-full flex items-center gap-2.5 rounded-lg border p-1.5 pr-3 text-left transition ${
+                      inPool
+                        ? "border-zinc-800 bg-zinc-900/40 opacity-60"
+                        : "border-zinc-800 bg-zinc-900/40 active:scale-[0.99] active:border-emerald-500"
+                    }`}
+                  >
+                    {art ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={art} alt="" className="w-11 h-11 rounded-md object-cover flex-none" />
+                    ) : (
+                      <div className="w-11 h-11 rounded-md bg-zinc-800 flex-none" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-sm leading-tight truncate">{t.name}</div>
+                      <div className="text-[11px] text-zinc-500 leading-tight truncate mt-0.5">
+                        {t.artists.map((a) => a.name).join(", ")}
+                      </div>
+                    </div>
+                    <span
+                      className={`text-[11px] flex-none ${inPool ? "text-zinc-500" : "text-emerald-400"}`}
+                    >
+                      {inPool ? "added ✓" : "+ add"}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </div>
+    </div>
   );
 }
