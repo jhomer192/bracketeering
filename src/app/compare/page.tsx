@@ -23,6 +23,11 @@ export default function ComparePage() {
   const [missingPool, setMissingPool] = useState(false);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Misclick recovery — snapshot the pre-vote state so the user can step
+  // back. Capped at HISTORY_CAP entries; ephemeral (not persisted) since
+  // misclicks are noticed within a couple votes max.
+  const historyRef = useRef<CompareState[]>([]);
+  const [canUndo, setCanUndo] = useState(false);
 
   useEffect(() => {
     const existing = loadCompareState();
@@ -83,12 +88,20 @@ export default function ComparePage() {
     [playingId]
   );
 
+  const HISTORY_CAP = 20;
+
   const pick = useCallback(
     (winner: "a" | "b") => {
       // Stop any preview audio so it doesn't bleed into the next matchup.
       stopAudio();
       setState((prev) => {
         if (!prev) return prev;
+        // Snapshot the unmutated prior state for undo. `prev` is safe to
+        // push by reference because we clone before vote() mutates.
+        const snapshot: CompareState = JSON.parse(JSON.stringify(prev));
+        historyRef.current.push(snapshot);
+        if (historyRef.current.length > HISTORY_CAP) historyRef.current.shift();
+        setCanUndo(true);
         const cloned: CompareState = JSON.parse(JSON.stringify(prev));
         const next = vote(cloned, winner);
         saveCompareState(next);
@@ -97,6 +110,15 @@ export default function ComparePage() {
     },
     [stopAudio]
   );
+
+  const undo = useCallback(() => {
+    if (historyRef.current.length === 0) return;
+    stopAudio();
+    const last = historyRef.current.pop()!;
+    saveCompareState(last);
+    setCanUndo(historyRef.current.length > 0);
+    setState(last);
+  }, [stopAudio]);
 
   // Desktop keyboard shortcuts: arrow keys + 1/2/A/B = pick, space = preview A.
   // Power-user mode for ripping through 370 votes on a laptop without your
@@ -119,11 +141,22 @@ export default function ComparePage() {
         } else if (matchup.a.preview_url) {
           togglePreview(matchup.a);
         }
+      } else if (
+        // Undo: Backspace, U, or Cmd/Ctrl+Z. Power-user shortcuts paired
+        // with the visible button so misclicks are recoverable however
+        // the user noticed them.
+        e.key === "Backspace" ||
+        e.key === "u" ||
+        e.key === "U" ||
+        ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z"))
+      ) {
+        e.preventDefault();
+        undo();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [matchup, pick, playingId, stopAudio, togglePreview]);
+  }, [matchup, pick, playingId, stopAudio, togglePreview, undo]);
 
   // Stop preview audio when the page unmounts.
   useEffect(() => {
@@ -210,16 +243,28 @@ export default function ComparePage() {
         </div>
       </div>
 
-      {/* Footer — keyboard hint on desktop, start-over on all sizes. */}
+      {/* Footer — keyboard hint on desktop, undo + start-over on all sizes. */}
       <footer className="flex-none pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div className="max-w-5xl mx-auto px-4 flex items-center justify-between gap-3">
           <div className="hidden sm:flex items-center gap-2 text-[11px] text-zinc-600">
             <Kbd>←</Kbd> A <span className="opacity-50">·</span>
             <Kbd>→</Kbd> B <span className="opacity-50">·</span>
-            <Kbd>space</Kbd> preview
+            <Kbd>space</Kbd> preview <span className="opacity-50">·</span>
+            <Kbd>⌫</Kbd> undo
           </div>
+          {/* Undo for misclicks. Visible at all sizes; disabled until the
+              first vote. Keyboard: Backspace / U / Cmd+Z. */}
           <button
-            className="text-[11px] text-zinc-600 hover:text-zinc-400 underline px-2 py-1 ml-auto"
+            onClick={undo}
+            disabled={!canUndo}
+            aria-label="Undo last pick"
+            className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400 disabled:text-zinc-700 disabled:cursor-not-allowed hover:text-zinc-200 transition px-2.5 py-1 ml-auto rounded-full border border-zinc-800 hover:border-zinc-600 disabled:hover:border-zinc-800"
+          >
+            <UndoIcon />
+            undo
+          </button>
+          <button
+            className="text-[11px] text-zinc-600 hover:text-zinc-400 underline px-2 py-1"
             onClick={() => {
               if (confirm("Start the bracket over? Your current votes will be lost.")) {
                 clearCompareState();
@@ -339,6 +384,15 @@ function Kbd({ children }: { children: React.ReactNode }) {
     <kbd className="px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-300 font-mono text-[10px]">
       {children}
     </kbd>
+  );
+}
+
+function UndoIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 8a5 5 0 0 1 5-5h2a5 5 0 1 1 0 10H6" />
+      <path d="m6 5-3 3 3 3" />
+    </svg>
   );
 }
 
