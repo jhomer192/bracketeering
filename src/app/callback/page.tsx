@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { exchangeCodeForTokens, setIdentity } from "@/lib/auth";
+import { exchangeCodeForTokens, setIdentity, consumePostAuthReturn } from "@/lib/auth";
 import { spotifyFetch } from "@/lib/spotify";
 import { consumeVerifier } from "@/lib/pkce";
 
@@ -39,7 +39,10 @@ export default function CallbackPage() {
         } catch {
           // non-fatal
         }
-        window.location.replace(`${basePath}/pool/`);
+        // Honor any return path stashed before login (e.g. self-healing
+        // re-auth from /reveal/). Default lands on /pool/.
+        const ret = consumePostAuthReturn();
+        window.location.replace(`${basePath}${ret ?? "/pool/"}`);
       } catch (e) {
         setError(e instanceof Error ? e.message : "token exchange failed");
       }

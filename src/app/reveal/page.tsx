@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { PoolEntry } from "@/lib/pool";
 import { loadRanked, clearRunState } from "@/lib/storage";
 import { exportPlaylists, type ExportResult } from "@/lib/export";
-import { isAuthed } from "@/lib/auth";
+import { isAuthed, hasExportScopes, startLogin } from "@/lib/auth";
 import { getQuips } from "@/lib/quips";
 
 export default function RevealPage() {
@@ -17,6 +17,7 @@ export default function RevealPage() {
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(false);
   const [quips, setQuips] = useState<string[]>([]);
+  const [needsReauth, setNeedsReauth] = useState(false);
 
   useEffect(() => {
     if (!isAuthed()) {
@@ -30,6 +31,9 @@ export default function RevealPage() {
     }
     setRanked(r);
     setQuips(getQuips(r, 2));
+    // Pre-flight: tokens predating any scope addition will 403 mid-export.
+    // Surface a reconnect CTA up front instead of a confusing error later.
+    if (!hasExportScopes()) setNeedsReauth(true);
   }, [basePath]);
 
   if (missing) {
@@ -55,10 +59,26 @@ export default function RevealPage() {
       const res = await exportPlaylists(ranked);
       setExported(res);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "export failed");
+      const msg = e instanceof Error ? e.message : "export failed";
+      // 403 / insufficient_scope means the token is missing playlist-modify.
+      // Flip to the reconnect path instead of dead-ending on a raw error.
+      if (/403|insufficient[_-]?scope|invalid[_-]?scope/i.test(msg)) {
+        setNeedsReauth(true);
+        setErr(null);
+      } else {
+        setErr(msg);
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  function reconnect() {
+    // After OAuth callback, return to /reveal/ so the user lands right
+    // back on the export button instead of /pool/.
+    startLogin("/reveal/").catch((e) => {
+      setErr(e instanceof Error ? e.message : "reconnect failed");
+    });
   }
 
   const top10 = ranked.slice(0, 10);
@@ -171,7 +191,24 @@ export default function RevealPage() {
       </div>
 
       <section className="max-w-2xl mx-auto px-3 sm:px-4 mt-6 sm:mt-10">
-        {exported ? (
+        {needsReauth && !exported ? (
+          <div className="rounded-2xl border border-amber-700/60 bg-amber-950/30 p-5 space-y-3">
+            <p className="font-semibold text-amber-200">
+              One more step to save to Spotify
+            </p>
+            <p className="text-sm text-amber-100/80 leading-snug">
+              We need updated permissions to create playlists in your Spotify
+              account. Reconnect to grant playlist access — your ranking is
+              saved and you&apos;ll come right back here.
+            </p>
+            <button
+              onClick={reconnect}
+              className="w-full h-12 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold"
+            >
+              Reconnect Spotify
+            </button>
+          </div>
+        ) : exported ? (
           <div className="rounded-2xl border border-emerald-700/60 bg-emerald-950/40 p-5 space-y-3">
             <p className="font-semibold text-emerald-200">Saved to Spotify ✓</p>
             <a

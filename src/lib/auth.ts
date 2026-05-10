@@ -25,7 +25,15 @@ const KEYS = {
   expiresAt: "bracketeering.expires_at",
   displayName: "bracketeering.display_name",
   spotifyUserId: "bracketeering.spotify_user_id",
+  scope: "bracketeering.scope",
+  postAuthReturn: "bracketeering.post_auth_return",
 } as const;
+
+// Scopes required to actually save the bracket as a Spotify playlist.
+// Cover upload (`ugc-image-upload`) is best-effort; playlist create+populate
+// is the hard requirement so older tokens that predate scope additions
+// can be detected and re-authed proactively.
+const EXPORT_REQUIRED_SCOPES = ["playlist-modify-private"];
 
 /** Resolve the redirect URI from the live origin + Next basePath. Same URL
  *  must be registered in the user's Spotify dev app. */
@@ -60,12 +68,34 @@ export function logout() {
   localStorage.removeItem(KEYS.expiresAt);
   localStorage.removeItem(KEYS.displayName);
   localStorage.removeItem(KEYS.spotifyUserId);
+  localStorage.removeItem(KEYS.scope);
 }
 
-/** Kick off PKCE: generate verifier, stash it, redirect to Spotify. */
-export async function startLogin() {
+/** Scopes the user actually granted on their most recent token. Spotify
+ *  echoes these back on the token-exchange response. We persist them so
+ *  scope-gated UI (like the Save-to-Spotify button) can pre-flight check
+ *  instead of failing mid-call. */
+export function getGrantedScopes(): string[] {
+  const s = localStorage.getItem(KEYS.scope);
+  return s ? s.split(/\s+/).filter(Boolean) : [];
+}
+
+/** Does the current token have everything we need to create a playlist? */
+export function hasExportScopes(): boolean {
+  const granted = new Set(getGrantedScopes());
+  return EXPORT_REQUIRED_SCOPES.every((s) => granted.has(s));
+}
+
+/** Kick off PKCE: generate verifier, stash it, redirect to Spotify. If
+ *  `returnTo` is provided (e.g. "/reveal/"), the callback page redirects
+ *  there instead of the default /pool/ — useful for self-healing re-auth
+ *  triggered from anywhere in the app. */
+export async function startLogin(returnTo?: string) {
   const clientId = getClientId();
   if (!clientId) throw new Error("no client_id stored — visit /setup first");
+
+  if (returnTo) sessionStorage.setItem(KEYS.postAuthReturn, returnTo);
+  else sessionStorage.removeItem(KEYS.postAuthReturn);
 
   const verifier = generateCodeVerifier();
   const challenge = await codeChallengeFromVerifier(verifier);
@@ -117,6 +147,14 @@ function storeTokens(data: TokenResponse) {
   localStorage.setItem(KEYS.accessToken, data.access_token);
   if (data.refresh_token) localStorage.setItem(KEYS.refreshToken, data.refresh_token);
   localStorage.setItem(KEYS.expiresAt, String(Date.now() + data.expires_in * 1000));
+  if (data.scope) localStorage.setItem(KEYS.scope, data.scope);
+}
+
+/** Pop the post-auth return path stashed by startLogin(). One-shot. */
+export function consumePostAuthReturn(): string | null {
+  const v = sessionStorage.getItem(KEYS.postAuthReturn);
+  if (v) sessionStorage.removeItem(KEYS.postAuthReturn);
+  return v;
 }
 
 /** Return a valid access_token, refreshing if within 30s of expiry. */
