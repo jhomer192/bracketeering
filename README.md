@@ -21,14 +21,18 @@ and Bracketeering uses it. No shared cap.
 - PKCE OAuth (no client_secret anywhere)
 - Seed pool builder (Layer 1 recent + Layer 2 all-time + Layer 3 genre fill)
 - 128-track sub-in grid (mobile-first, source-coded album-art tiles)
+- Beli-style comparison engine — binary insertion with a top-25 floor
+  (~370 votes for a 128-track pool, vs ~900 for full sort). Run state
+  persists in localStorage, so refresh / close-the-tab is fine.
+- Reveal screen — top 10 ranked, expand to top 25
+- Playlist export — creates "My Top 10" + "My Top 25" playlists in your
+  Spotify, each with composed-mosaic cover art (2×2 / 3×3, JPEG ≤256KB,
+  drawn in-browser via `<canvas>`)
 
 ## Not built yet
 
 - Search-to-add on sub-in screen
-- Comparison engine (Beli-style binary insertion with rank-10 floor)
-- Reveal screen
-- Playlist export + auto cover art
-- Bracket export image
+- Bracket export image (single shareable PNG)
 - Predict-my-top-10 share link
 
 ## Local dev
@@ -60,6 +64,8 @@ app can register multiple redirect URIs — add both.
 | `/setup` | One-time: paste Client ID |
 | `/callback` | PKCE token exchange |
 | `/pool` | Sub-in screen — review the 128, drop what you don't want |
+| `/compare` | This-or-that voting (~370 taps for a full pool) |
+| `/reveal` | Top 10 ranking + Save to Spotify |
 
 ## Deploy
 

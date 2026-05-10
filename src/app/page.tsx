@@ -68,7 +68,7 @@ export default function Home() {
           <li>1. 90-sec one-time setup (Spotify dev keys).</li>
           <li>2. We pull your 64 most-recent + 64 all-time.</li>
           <li>3. You sub in any songs we missed.</li>
-          <li>4. ~210 head-to-heads, ~18 minutes.</li>
+          <li>4. ~400 quick taps, ~20 minutes.</li>
           <li>5. Top 10 + Top 25 saved to your Spotify.</li>
         </ol>
         <p className="text-xs text-zinc-600 max-w-xs mx-auto">

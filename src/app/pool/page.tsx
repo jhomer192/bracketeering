@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { buildPool, type PoolEntry, type PoolSource } from "@/lib/pool";
 import { isAuthed } from "@/lib/auth";
+import { saveKeptPool, clearCompareState } from "@/lib/storage";
 
 const TARGET = 128;
 
@@ -174,7 +175,15 @@ export default function PoolPage() {
                 ? "bg-[#1DB954] hover:bg-[#1ed760] text-black"
                 : "bg-zinc-800 text-zinc-500"
             }`}
-            onClick={() => alert("Comparison engine — next build step.")}
+            onClick={() => {
+              if (!ready) return;
+              saveKeptPool(kept);
+              // Stale in-flight comparison from a previous run shouldn't
+              // bleed into a fresh pool — clear it.
+              clearCompareState();
+              const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+              window.location.href = `${basePath}/compare/`;
+            }}
           >
             Start →
           </button>
