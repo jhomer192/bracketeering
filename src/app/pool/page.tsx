@@ -334,8 +334,21 @@ export default function PoolPage() {
       const combined = [...friendTracks.map((t) => t.id), ...myKept.map((t) => t.id)];
       const isLast = mode.params.slotIndex === mode.params.groupSize;
       if (isLast) {
-        // Last slot — rank the merged 128.
-        const merged: PoolEntry[] = [...friendTracks, ...myKept];
+        // Last slot — rank the merged pool. Friends and you can both have
+        // contributed the same song (different IDs, same name+artist), so
+        // dedupe by trackKey before saving — otherwise the compare engine's
+        // dupe-skip path during floor-fill leaves the saved top 25 short.
+        const seenId = new Set<string>();
+        const seenKey = new Set<string>();
+        const merged: PoolEntry[] = [];
+        for (const t of [...friendTracks, ...myKept]) {
+          if (!t || !t.id || seenId.has(t.id)) continue;
+          const k = trackKey(t);
+          if (seenKey.has(k)) continue;
+          seenId.add(t.id);
+          seenKey.add(k);
+          merged.push(t);
+        }
         saveKeptPool(merged);
         clearCompareState();
         // Strip group params before navigating.

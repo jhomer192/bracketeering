@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { PoolEntry } from "@/lib/pool";
-import { loadKeptPool, loadRanked, clearRunState } from "@/lib/storage";
+import { trackKey, type PoolEntry } from "@/lib/pool";
+import { FLOOR } from "@/lib/compare";
+import { loadKeptPool, loadRanked, saveRanked, clearRunState } from "@/lib/storage";
 import { exportPlaylists, type ExportResult } from "@/lib/export";
 import { isAuthed, hasExportScopes, startLogin } from "@/lib/auth";
 import { getQuips } from "@/lib/quips";
@@ -116,9 +117,28 @@ export default function RevealPage() {
       setMissing(true);
       return;
     }
-    setRanked(r);
-    setKeptPool(loadKeptPool());
-    setQuips(getQuips(r, 2));
+    const kept = loadKeptPool();
+    // Heal pre-fix saves: an early version could finish with `ranked` shorter
+    // than FLOOR if cross-release dupes were popped during floor-fill. Pad
+    // from the kept pool (in pool order) so users on stale state see a full
+    // top 10 / top 25 and the Spotify export gets all 25.
+    let healed = r;
+    if (kept && r.length < FLOOR) {
+      const seenId = new Set(r.map((t) => t.id));
+      const seenKey = new Set(r.map((t) => trackKey(t)));
+      for (const t of kept) {
+        if (healed.length >= FLOOR) break;
+        const k = trackKey(t);
+        if (seenId.has(t.id) || seenKey.has(k)) continue;
+        healed = [...healed, t];
+        seenId.add(t.id);
+        seenKey.add(k);
+      }
+      if (healed.length !== r.length) saveRanked(healed);
+    }
+    setRanked(healed);
+    setKeptPool(kept);
+    setQuips(getQuips(healed, 2));
     // Pre-flight: tokens predating any scope addition will 403 mid-export.
     // Surface a reconnect CTA up front instead of a confusing error later.
     if (!hasExportScopes()) setNeedsReauth(true);

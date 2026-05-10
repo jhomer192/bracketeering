@@ -6,6 +6,7 @@ import {
   vote,
   currentMatchup,
   isDone,
+  FLOOR,
   type CompareState,
 } from "@/lib/compare";
 import {
@@ -15,6 +16,7 @@ import {
   saveRanked,
   clearCompareState,
 } from "@/lib/storage";
+import { trackKey, type PoolEntry } from "@/lib/pool";
 import type { SpotifyTrack } from "@/lib/spotify";
 import { getPreviewPlayer, trackUri } from "@/lib/spotifyPlayer";
 
@@ -53,7 +55,28 @@ export default function ComparePage() {
 
   useEffect(() => {
     if (state && isDone(state)) {
-      saveRanked(state.ranked);
+      // Pad ranked up to FLOOR if the binary-insertion run finished short
+      // (can happen when the kept pool contains cross-release duplicates —
+      // group mode + overlapping favorites is the usual culprit). Take the
+      // next non-dup tracks from the kept pool in pool order so the user
+      // always gets a definitive top 10 and top 25 (and a full 25-track
+      // Spotify export). "Tiebreaker" = pool order, which is best-Spotify-
+      // signal-first by buildPool construction.
+      let final: PoolEntry[] = state.ranked;
+      if (final.length < FLOOR) {
+        const kept = loadKeptPool() ?? [];
+        const seenId = new Set(final.map((t) => t.id));
+        const seenKey = new Set(final.map((t) => trackKey(t)));
+        for (const t of kept) {
+          if (final.length >= FLOOR) break;
+          const k = trackKey(t);
+          if (seenId.has(t.id) || seenKey.has(k)) continue;
+          final = [...final, t];
+          seenId.add(t.id);
+          seenKey.add(k);
+        }
+      }
+      saveRanked(final);
       clearCompareState();
       window.location.replace(`${basePath}/reveal/`);
     }
