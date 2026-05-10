@@ -32,6 +32,8 @@ export async function GET(req: NextRequest) {
   await session.save();
 
   // Fetch /me to stash identity, then upsert BYO creds keyed by spotify_user_id.
+  // SECURITY: the secret is encrypted before it touches the DB. Logging below
+  // intentionally surfaces only error codes/messages, not row payloads.
   try {
     const me = await spotifyFetch<{ id: string; display_name: string }>(session, "/me");
     session.spotify_user_id = me.id;
@@ -51,11 +53,13 @@ export async function GET(req: NextRequest) {
         { onConflict: "spotify_user_id" },
       );
     if (upsertErr) {
-      // Don't block the user — log + continue. Cookie still has everything needed.
-      console.error("supabase upsert failed:", upsertErr);
+      // Don't block the user — cookie still has everything needed for this session.
+      console.error("supabase upsert failed:", upsertErr.code, upsertErr.message);
     }
   } catch (e) {
-    console.error("post-OAuth identity step failed:", e);
+    // Avoid passing the raw error (could contain headers/body of the failing
+    // request); just log a short message.
+    console.error("post-OAuth identity step failed:", e instanceof Error ? e.message : "unknown");
   }
 
   return NextResponse.redirect(`${base}/pool`);

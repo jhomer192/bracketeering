@@ -118,12 +118,14 @@ export default async function SetupPage({
           <Field
             name="client_id"
             label="Client ID"
+            type="text"
             placeholder="32-character hex string"
             autoComplete="off"
           />
           <Field
             name="client_secret"
             label="Client secret"
+            type="password"
             placeholder="32-character hex string"
             autoComplete="off"
           />
@@ -153,11 +155,13 @@ function Step({ n }: { n: number }) {
 function Field({
   name,
   label,
+  type = "text",
   placeholder,
   autoComplete,
 }: {
   name: string;
   label: string;
+  type?: "text" | "password";
   placeholder?: string;
   autoComplete?: string;
 }) {
@@ -166,7 +170,7 @@ function Field({
       <span className="block text-sm text-zinc-300 mb-1">{label}</span>
       <input
         name={name}
-        type="text"
+        type={type}
         required
         spellCheck={false}
         autoComplete={autoComplete}
