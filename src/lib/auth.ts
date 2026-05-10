@@ -80,17 +80,26 @@ export function getGrantedScopes(): string[] {
   return s ? s.split(/\s+/).filter(Boolean) : [];
 }
 
-/** Does the current token have everything we need to create a playlist? */
+/** Does the current token have everything we need to create a playlist?
+ *  Optimistic: if we have NO scope record at all (older session, before we
+ *  started persisting `data.scope`), assume the token is fine and let the
+ *  actual API call surface a real 403 / insufficient_scope. Strict mode
+ *  would otherwise loop the user through reauth that doesn't fix anything. */
 export function hasExportScopes(): boolean {
-  const granted = new Set(getGrantedScopes());
-  return EXPORT_REQUIRED_SCOPES.every((s) => granted.has(s));
+  const granted = getGrantedScopes();
+  if (granted.length === 0) return true; // unknown — let the call try
+  const set = new Set(granted);
+  return EXPORT_REQUIRED_SCOPES.every((s) => set.has(s));
 }
 
 /** Kick off PKCE: generate verifier, stash it, redirect to Spotify. If
  *  `returnTo` is provided (e.g. "/reveal/"), the callback page redirects
  *  there instead of the default /pool/ — useful for self-healing re-auth
- *  triggered from anywhere in the app. */
-export async function startLogin(returnTo?: string) {
+ *  triggered from anywhere in the app. `forceConsent` adds `show_dialog=true`
+ *  so Spotify always shows the consent screen — used by re-auth flows where
+ *  the user needs to actually grant new scopes (otherwise Spotify
+ *  auto-approves silently and `data.scope` echoes back the OLD grant). */
+export async function startLogin(returnTo?: string, forceConsent = false) {
   const clientId = getClientId();
   if (!clientId) throw new Error("no client_id stored — visit /setup first");
 
@@ -111,6 +120,7 @@ export async function startLogin(returnTo?: string) {
     code_challenge_method: "S256",
     code_challenge: challenge,
   });
+  if (forceConsent) params.set("show_dialog", "true");
   window.location.href = `${AUTH_URL}?${params.toString()}`;
 }
 

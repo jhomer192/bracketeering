@@ -5,7 +5,7 @@ import { trackKey, type PoolEntry } from "@/lib/pool";
 import { FLOOR } from "@/lib/compare";
 import { loadKeptPool, loadRanked, saveRanked, clearRunState } from "@/lib/storage";
 import { exportPlaylists, type ExportResult } from "@/lib/export";
-import { isAuthed, hasExportScopes, startLogin } from "@/lib/auth";
+import { isAuthed, hasExportScopes, startLogin, logout } from "@/lib/auth";
 import { getQuips } from "@/lib/quips";
 import { renderTierCard, shareOrDownloadCard } from "@/lib/cardExport";
 
@@ -187,11 +187,15 @@ export default function RevealPage() {
       setExported(res);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "export failed";
-      // 403 / insufficient_scope means the token is missing playlist-modify.
-      // Flip to the reconnect path instead of dead-ending on a raw error.
-      if (/403|insufficient[_-]?scope|invalid[_-]?scope/i.test(msg)) {
+      // Only flip to reauth on actual scope failures — Spotify echoes
+      // `insufficient_scope` / `invalid_scope` in the 401/403 body for
+      // missing-scope errors. A bare 403 (dev-mode allowlist, app quota,
+      // region) is NOT solvable by re-auth, so don't loop the user — show
+      // the actual error instead.
+      const isScope = /insufficient[_-]?scope|invalid[_-]?scope/i.test(msg);
+      if (isScope) {
         setNeedsReauth(true);
-        setErr(null);
+        setErr(msg); // keep the message visible so user knows what happened
       } else {
         setErr(msg);
       }
@@ -202,8 +206,20 @@ export default function RevealPage() {
 
   function reconnect() {
     // After OAuth callback, return to /reveal/ so the user lands right
-    // back on the export button instead of /pool/.
-    startLogin("/reveal/").catch((e) => {
+    // back on the export button instead of /pool/. Force the consent
+    // screen — otherwise Spotify silently re-approves the existing grant
+    // and we land back here with the same scopes, looping the user.
+    startLogin("/reveal/", true).catch((e) => {
+      setErr(e instanceof Error ? e.message : "reconnect failed");
+    });
+  }
+
+  function switchAccount() {
+    // Hard escape hatch: clear tokens and start fresh. Forces the consent
+    // screen and lets the user pick a different Spotify account if the
+    // current one isn't allowlisted on the dev app or hits a 403 wall.
+    logout();
+    startLogin("/reveal/", true).catch((e) => {
       setErr(e instanceof Error ? e.message : "reconnect failed");
     });
   }
@@ -426,6 +442,12 @@ export default function RevealPage() {
               className="w-full h-12 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold"
             >
               Reconnect Spotify
+            </button>
+            <button
+              onClick={switchAccount}
+              className="w-full text-xs text-amber-100/70 hover:text-amber-100 underline"
+            >
+              still stuck? sign out and try a different Spotify account
             </button>
           </div>
         ) : exported ? (
