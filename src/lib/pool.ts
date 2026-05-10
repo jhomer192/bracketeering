@@ -256,31 +256,47 @@ async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
   let order = 0;
 
   const fields =
-    "items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images)))";
+    "items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images))),next";
+
+  // 3 pages × 100 = up to 300 tracks per playlist. Covers most playlists in
+  // full; the rare 300+ track playlist gets its tail truncated. API budget
+  // cap: 50 playlists × 3 pages = 150 calls worst-case.
+  const PAGES_PER_PLAYLIST = 3;
 
   for (const pl of own) {
-    try {
-      const trk = await spotifyFetch<{
-        items: Array<{ track: SpotifyTrack | null }>;
-      }>(`/playlists/${pl.id}/tracks?limit=100&fields=${encodeURIComponent(fields)}`);
-      // De-dup within a single playlist before counting — a song listed
-      // twice in the same playlist is one "vote," not two.
-      const seenInPl = new Set<string>();
-      for (const item of trk.items ?? []) {
-        const t = item.track;
-        if (!t || !t.id) continue;
-        const key = trackKey(t);
-        if (seenInPl.has(key)) continue;
-        seenInPl.add(key);
-        const existing = byKey.get(key);
-        if (existing) {
-          existing.count += 1;
-        } else {
-          byKey.set(key, { track: t, count: 1, firstSeenOrder: order++ });
+    const seenInPl = new Set<string>();
+    let url: string | null =
+      `/playlists/${pl.id}/tracks?limit=100&fields=${encodeURIComponent(fields)}`;
+    for (let page = 0; page < PAGES_PER_PLAYLIST && url; page++) {
+      try {
+        type Page = {
+          items: Array<{ track: SpotifyTrack | null }>;
+          next: string | null;
+        };
+        const path = url.startsWith("http")
+          ? url.replace(/^https?:\/\/api\.spotify\.com\/v1/, "")
+          : url;
+        const data: Page = await spotifyFetch<Page>(path);
+        // De-dup within a single playlist before counting — a song listed
+        // twice in the same playlist is one "vote," not two.
+        for (const item of data.items ?? []) {
+          const t = item.track;
+          if (!t || !t.id) continue;
+          const key = trackKey(t);
+          if (seenInPl.has(key)) continue;
+          seenInPl.add(key);
+          const existing = byKey.get(key);
+          if (existing) {
+            existing.count += 1;
+          } else {
+            byKey.set(key, { track: t, count: 1, firstSeenOrder: order++ });
+          }
         }
+        url = data.next;
+      } catch {
+        // One playlist failure shouldn't poison the signal.
+        break;
       }
-    } catch {
-      // One playlist failure shouldn't poison the signal.
     }
   }
 
