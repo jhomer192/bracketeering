@@ -4,11 +4,13 @@
 //   - long_term top tracks      ← Spotify's all-time favorites
 //   - medium_term top tracks    ← last 6 months
 //   - short_term top tracks     ← last 4 weeks; capped at 5 forever
-//   - playlist cross-frequency  ← songs in ≥3 of the user's own playlists
-//                                  (auto-gen excluded). 1- and 2-playlist
-//                                  songs are dropped — adding a track to
-//                                  one playlist is "I added this once,"
-//                                  not "this is a favorite."
+//   - playlist cross-frequency  ← songs in ≥25% of the user's own playlists
+//                                  (auto-gen excluded), with a floor of 2.
+//                                  Adding a song to a single playlist is
+//                                  "I added this once," not "this is a
+//                                  favorite." The percentage adapts: a
+//                                  user with 4 playlists needs the song in
+//                                  2+, a user with 40 needs it in 10+.
 //
 // Pass 1: 20 / 20 / 5 / 20    = up to 65 admits
 // Pass 2: 40 / 40 / 5 / 40    = up to 125 cumulative
@@ -63,12 +65,35 @@ const PASS_QUOTAS = [
 // "Today's Top Hits" — a stable Spotify-owned playlist that always exists.
 const TODAYS_TOP_HITS_PLAYLIST_ID = "37i9dQZF1DXcBWIGoYBM5M";
 
-// Cross-playlist signal threshold. A track in only 1 or 2 of the user's
-// playlists isn't a "vote" — it's just "I added this once at some point."
-// Real curation signal starts at 3+ appearances. Below this floor, songs
-// don't get admitted via the playlist channel (they can still come in
-// through long_term/medium_term/short_term if they earn it elsewhere).
-const MIN_PLAYLIST_APPEARANCES = 3;
+// Cross-playlist signal threshold. A track has to appear in a meaningful
+// PORTION of the user's playlists to count — fixed thresholds break across
+// user types (4-playlist user vs. 40-playlist user). We scale relative to
+// the user's playlist count, with a strict floor of 2 because "cross-
+// playlist" can't mean anything below 2 appearances.
+//
+//   threshold = max(2, ceil(playlistCount * 0.25))
+//
+// Examples:
+//   3 playlists  → in 2+   (≥67%)   ← almost universal
+//   4 playlists  → in 2+   (≥50%)
+//   8 playlists  → in 2+   (≥25%)
+//   12 playlists → in 3+   (≥25%)
+//   20 playlists → in 5+   (≥25%)
+//   50 playlists → in 13+  (≥26%)
+//
+// Picked 25% as the cutoff because below that, "appearance in one quarter
+// of your playlists" stops feeling like curation and starts feeling like
+// "this song is in my workout, road-trip, AND chill playlists" — which is
+// exactly the cross-context signal we want.
+const PLAYLIST_FRACTION_THRESHOLD = 0.25;
+const MIN_PLAYLIST_APPEARANCES_FLOOR = 2;
+
+function playlistThreshold(playlistCount: number): number {
+  return Math.max(
+    MIN_PLAYLIST_APPEARANCES_FLOOR,
+    Math.ceil(playlistCount * PLAYLIST_FRACTION_THRESHOLD),
+  );
+}
 
 /** Normalize a track title for cross-release dedup. Spotify gives the same
  *  recording multiple IDs across single/album/deluxe/regional/remaster
@@ -236,8 +261,11 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
  *  A track that appears in 7 of your playlists has been "voted for" 7 times
  *  by you — much stronger curation signal than appearing in just one. Returns
  *  tracks sorted by descending appearance count, filtered to those that
- *  appear in at least MIN_PLAYLIST_APPEARANCES (3) playlists. Ties ordered
- *  by Spotify's playlist insertion order — stable, not random.
+ *  appear in at least `playlistThreshold(playlistCount)` of them. The
+ *  threshold scales with the user's playlist count (25% of total, floor 2)
+ *  so the filter means the same thing for a 4-playlist user and a
+ *  40-playlist user. Ties ordered by Spotify's playlist insertion order —
+ *  stable, not random.
  *
  *  Excludes:
  *    - playlists owned by Spotify (Daily Mix, Discover Weekly, Release Radar,
@@ -311,8 +339,9 @@ async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
     }
   }
 
+  const threshold = playlistThreshold(own.length);
   return [...byKey.values()]
-    .filter((e) => e.count >= MIN_PLAYLIST_APPEARANCES)
+    .filter((e) => e.count >= threshold)
     .sort((a, b) => b.count - a.count || a.firstSeenOrder - b.firstSeenOrder)
     .map((e) => e.track);
 }
