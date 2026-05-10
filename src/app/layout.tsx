@@ -91,7 +91,11 @@ export default function RootLayout({
           httpEquiv="Content-Security-Policy"
           content={[
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline'",
+            // open.spotify.com hosts the Iframe Embed API script
+            // (`/embed/iframe-api/v1`) that powers the in-bracket preview
+            // player. Spotify deprecated `preview_url` in late 2024, so the
+            // embed iframe is the only path that actually plays audio.
+            "script-src 'self' 'unsafe-inline' https://open.spotify.com",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' https://i.scdn.co https://mosaic.scdn.co data: blob:",
             "font-src 'self' data:",
