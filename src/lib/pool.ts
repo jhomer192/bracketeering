@@ -1,23 +1,24 @@
 // Build the 128-track candidate pool:
 //   Layer 1 — playlist (your own playlists' tracks) ← strongest curation signal
-//   Layer 2 — medium_term top (last 6 months) ← stable current-favorites signal
-//   Layer 3 — saved library page 1 (newest saves first)
-//   Layer 4 — short_term top (last 4 weeks), CORROBORATED ONLY + small emerging admit
-//   Layer 5 — recently_played replays (≥2 plays in last 50)
-//   Layer 6 — long_term top (flaky — backstop only)
-//   Layer 7 — more saves + genre fill (only if everything above is short)
+//   Layer 2 — medium_term top (last 6 months)        ← current favorites
+//   Layer 3 — long_term top (last several years)     ← all-time favorites
+//   Layer 4 — short_term top (last 4 weeks)          ← only if pool < target
+//   Layer 5 — genre fill                              ← last-resort backstop
 //
-// playlist is layer 1 because tracks the user manually compiled into their
-// own playlists are the strongest "I genuinely chose this" signal Spotify
-// exposes — far stronger than algorithmic top tracks.
+// Layers 1-3 are admitted UNCONDITIONALLY: playlist + medium + all 50 of
+// long_term go in regardless of how full the pool is, because Spotify's
+// long_term top 50 is the most defensible "this person actually likes
+// this song" list available. If overshoots happen they're trimmed at the
+// end, but short_term and genre_fill are the only layers that get
+// skipped when the pool is already at target.
 //
-// short_term is filtered against corroboration in layers 1-3 because the
-// 4-week window is small enough that a single-play track (someone said "you
-// have to hear this") can crack Spotify's short_term top 50. Requiring the
-// track to also exist in playlists/saved/medium_term proves it has staying
-// power. We still admit the top N uncorroborated short_term entries to
-// catch genuine emerging favorites that haven't existed long enough to
-// register in the longer-window signals yet.
+// Removed (with intent, see commits):
+//   - saved library: tapping the heart means "remember this exists," not
+//     "I love this song." Most-recent-saves was producing one-time-played
+//     tracks in brackets, which is the exact opposite of the goal.
+//   - recently_played replays: ≥2 plays in the last 50 tracks heard is
+//     noise (one afternoon of listening), not a favorite signal. short_term
+//     top covers recent favorites with Spotify's own play-volume weighting.
 
 import { spotifyFetch, type SpotifyTrack, type SpotifyArtist } from "./spotify";
 
@@ -37,13 +38,6 @@ export type PoolEntry = SpotifyTrack & {
 };
 
 const DEFAULT_TARGET = 128;
-
-// Top-N uncorroborated short_term picks admitted as "emerging favorites" —
-// covers tracks too new to register in medium_term/saved/playlists yet.
-// Kept small so friend-recommendation one-offs don't sneak through: Spotify's
-// short_term ranking is rank-by-listening-volume, so the top few entries are
-// the ones the user actually leaned into.
-const SHORT_TERM_EMERGING_ADMIT = 5;
 
 /** Normalize a track title for cross-release dedup. Spotify gives the same
  *  recording multiple IDs across single/album/deluxe/regional/remaster
@@ -77,10 +71,6 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   composition: Record<PoolSource, number>;
 }> {
   const TARGET = target;
-  // Recent-only floor: roughly half the pool should be recent enough to
-  // matter. Scales with target (32 for 64, 64 for 128) so smaller pools
-  // don't stuff in long_term backstop tracks the user barely listens to.
-  const RECENT_TARGET = Math.floor(TARGET / 2);
   const seen = new Set<string>();      // by Spotify track ID
   const seenKey = new Set<string>();   // by normalized name+artist (cross-release dedup)
   const out: PoolEntry[] = [];
@@ -97,7 +87,9 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   };
 
   // ---------- Layer 1 — user's own playlists ----------
-  // Best-effort: skip silently if scope not granted (older sessions).
+  // Tracks the user manually compiled into their own playlists are the
+  // strongest "I genuinely chose this" signal Spotify exposes — far stronger
+  // than any algorithmic top list. Best-effort: skip silently on scope error.
   try {
     const playlistTracks = await fetchOwnPlaylistTracks();
     tag(playlistTracks, "playlist");
@@ -106,91 +98,38 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   }
 
   // ---------- Layer 2 — medium_term top (last 6 months) ----------
-  // The best "current favorites" signal — recent enough to reflect actual
-  // taste, long enough to require sustained listening to register.
+  // Best "current favorites" signal — recent enough to reflect actual taste,
+  // long enough to require sustained listening to register. Admitted in full
+  // unconditionally.
   const mediumTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
     "/me/top/tracks?time_range=medium_term&limit=50"
   );
   tag(mediumTerm.items, "medium_term");
 
-  // ---------- Layer 3 — saved library page 1 (newest saves) ----------
-  // Spotify /me/tracks default order is added_at desc — explicitly-saved
-  // tracks are a stronger signal than any algorithmic "top". Pulled up from
-  // its old layer-4 position so it's available for short_term corroboration.
-  const saved1 = await spotifyFetch<{ items: Array<{ track: SpotifyTrack }> }>(
-    "/me/tracks?limit=50&offset=0"
+  // ---------- Layer 3 — long_term top (all-time) ----------
+  // Spotify's long_term top 50 is the strongest "this person actually likes
+  // this song" list we can pull. Admitted in full unconditionally, even if
+  // the pool is already above target — final trim happens at the end and
+  // prefers to drop short_term/genre_fill before long_term.
+  const longTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
+    "/me/top/tracks?time_range=long_term&limit=50"
   );
-  const saved1Tracks = (saved1.items ?? []).map((i) => i.track).filter(Boolean);
-  tag(saved1Tracks, "saved_early");
+  tag(longTerm.items, "long_term");
 
-  // ---------- Layer 4 — short_term top (last 4 weeks), corroborated ----------
-  // The 4-week window is small enough that a single-play track ("you have
-  // to hear this") can crack short_term top 50. So short_term entries that
-  // ALSO appear in layers 1-3 (playlist / medium_term / saved) have proven
-  // staying power and are kept implicitly: those tracks are already in the
-  // pool with their stronger source tag, and `tag()` won't re-admit them.
-  //
-  // For short_term entries that DON'T appear in any longer-window signal,
-  // we admit only the top N — Spotify orders /me/top/tracks by descending
-  // listening volume, so the top few uncorroborated picks are the ones the
-  // user actually leaned into, not friend-recommendation one-offs. This
-  // preserves the "emerging favorite" case (genuinely new track that hasn't
-  // had time to register in medium_term or saved yet).
-  //
-  // `seen` / `seenKey` already contain every ID and normalized name+artist
-  // admitted by layers 1-3, so the corroboration check is just a lookup.
-  // `seenKey` catches cross-release dedup, so a short_term remaster of a
-  // saved original counts as corroborated.
-  const shortTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
-    "/me/top/tracks?time_range=short_term&limit=50"
-  );
-  const emergingShort = (shortTerm.items ?? []).filter(
-    (t) => t && t.id && !seen.has(t.id) && !seenKey.has(trackKey(t)),
-  );
-  tag(emergingShort.slice(0, SHORT_TERM_EMERGING_ADMIT), "short_term");
-
-  // ---------- Layer 5 — recently played replays (only if recent slate light) ----------
-  if (countSources(out, ["short_term", "recently_played"]) < RECENT_TARGET) {
-    const recent = await spotifyFetch<{ items: Array<{ track: SpotifyTrack }> }>(
-      "/me/player/recently-played?limit=50"
-    );
-    const counts = new Map<string, { track: SpotifyTrack; count: number }>();
-    for (const item of recent.items ?? []) {
-      const t = item.track;
-      if (!t || !t.id) continue;
-      const cur = counts.get(t.id);
-      if (cur) cur.count += 1;
-      else counts.set(t.id, { track: t, count: 1 });
-    }
-    const replayPicks = [...counts.values()]
-      .filter((x) => x.count >= 2)
-      .sort((a, b) => b.count - a.count)
-      .map((x) => x.track);
-    tag(replayPicks, "recently_played");
-  }
-
-  // ---------- Layer 6 — long_term as backstop ----------
-  // Demoted because Spotify's long_term algorithm can include tracks you
-  // barely played. Only pulled if we still need bodies.
+  // ---------- Layer 4 — short_term top (last 4 weeks) ----------
+  // Only fill from short_term if the pool is short of target. Short_term
+  // entries that already overlap with playlist/medium/long are already in
+  // the pool with their stronger source tag (tag() won't re-admit them).
+  // Spotify orders /me/top/tracks by descending listening volume, so when
+  // we DO need to fill, the top entries are the ones the user leaned into.
   if (out.length < TARGET) {
-    const longTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
-      "/me/top/tracks?time_range=long_term&limit=50"
+    const shortTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
+      "/me/top/tracks?time_range=short_term&limit=50"
     );
-    tag(longTerm.items, "long_term");
+    tag(shortTerm.items, "short_term");
   }
 
-  // ---------- Layer 7a — more saves if we still need bodies ----------
-  if (out.length < TARGET) {
-    const saved2 = await spotifyFetch<{ items: Array<{ track: SpotifyTrack }> }>(
-      "/me/tracks?limit=50&offset=50"
-    );
-    tag(
-      (saved2.items ?? []).map((i) => i.track).filter(Boolean),
-      "saved_early"
-    );
-  }
-
-  // ---------- Layer 7b — genre fill (only if still under target) ----------
+  // ---------- Layer 5 — genre fill (last-resort backstop) ----------
   if (out.length < TARGET) {
     try {
       const genreFill = await fillFromGenres(TARGET - out.length, seen);
@@ -222,10 +161,6 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   );
 
   return { pool, composition };
-}
-
-function countSources(pool: PoolEntry[], sources: PoolSource[]) {
-  return pool.filter((t) => sources.includes(t.source)).length;
 }
 
 async function fillFromGenres(
