@@ -5,7 +5,6 @@
 //   Layer 4 — graceful degradation (run with whatever pool we got)
 
 import { spotifyFetch, type SpotifyTrack, type SpotifyArtist } from "./spotify";
-import type { SessionData } from "./session";
 
 export type PoolSource = "short_term" | "recently_played" | "long_term" | "saved_early" | "genre_fill";
 
@@ -17,7 +16,7 @@ const TARGET = 128;
 const RECENT_TARGET = 64;
 const ALLTIME_TARGET = 64;
 
-export async function buildPool(session: SessionData): Promise<{
+export async function buildPool(): Promise<{
   pool: PoolEntry[];
   composition: Record<PoolSource, number>;
 }> {
@@ -34,14 +33,12 @@ export async function buildPool(session: SessionData): Promise<{
 
   // ---------- Layer 1 ----------
   const shortTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
-    session,
     "/me/top/tracks?time_range=short_term&limit=50"
   );
   tag(shortTerm.items, "short_term");
 
   if (countSources(out, ["short_term", "recently_played"]) < RECENT_TARGET) {
     const recent = await spotifyFetch<{ items: Array<{ track: SpotifyTrack }> }>(
-      session,
       "/me/player/recently-played?limit=50"
     );
     // Group by track.id, count plays, prefer high-replay tracks
@@ -62,7 +59,6 @@ export async function buildPool(session: SessionData): Promise<{
 
   // ---------- Layer 2 ----------
   const longTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
-    session,
     "/me/top/tracks?time_range=long_term&limit=50"
   );
   tag(longTerm.items, "long_term");
@@ -70,7 +66,6 @@ export async function buildPool(session: SessionData): Promise<{
   if (out.length < RECENT_TARGET + ALLTIME_TARGET) {
     // Saved tracks oldest-first as identity layer
     const saved = await spotifyFetch<{ items: Array<{ track: SpotifyTrack }> }>(
-      session,
       "/me/tracks?limit=50&offset=0"
     );
     tag(
@@ -82,7 +77,7 @@ export async function buildPool(session: SessionData): Promise<{
   // ---------- Layer 3 — genre fill (only if still under target) ----------
   if (out.length < TARGET) {
     try {
-      const genreFill = await fillFromGenres(session, TARGET - out.length, seen);
+      const genreFill = await fillFromGenres(TARGET - out.length, seen);
       tag(genreFill, "genre_fill");
     } catch {
       // Genre fill is best-effort; pool can run smaller.
@@ -108,14 +103,12 @@ function countSources(pool: PoolEntry[], sources: PoolSource[]) {
 }
 
 async function fillFromGenres(
-  session: SessionData,
   needed: number,
   alreadySeen: Set<string>
 ): Promise<SpotifyTrack[]> {
   // Spotify deprecated /recommendations in 2024. Fallback: derive top genres from
   // top artists, then search Spotify for popular tracks tagged in those genres.
   const artists = await spotifyFetch<{ items: SpotifyArtist[] }>(
-    session,
     "/me/top/artists?time_range=long_term&limit=50"
   );
   const genreCount = new Map<string, number>();
@@ -132,7 +125,6 @@ async function fillFromGenres(
     if (out.length >= needed) break;
     const q = encodeURIComponent(`genre:"${genre}"`);
     const search = await spotifyFetch<{ tracks: { items: SpotifyTrack[] } }>(
-      session,
       `/search?q=${q}&type=track&limit=${Math.min(50, needed - out.length + 10)}`
     );
     for (const t of search.tracks.items ?? []) {

@@ -2,12 +2,25 @@
 
 Vote "this or that" on 128 of your songs. Walk away with a real top 10 — and Spotify playlists that prove it.
 
+**Live**: <https://jhomer192.github.io/bracketeering/>
+
+## How it works
+
+Bracketeering is a static SPA. There is no backend. The OAuth flow is
+**Authorization Code with PKCE** — you paste your own Spotify Client ID
+once, and every Spotify call goes browser → `api.spotify.com` directly,
+authed with your own access token. Nothing about your account, your music,
+or your keys ever leaves your browser.
+
+**Why BYO Client ID?** Spotify caps each developer app at 5 friends. So
+each user creates their own free dev app — 90-second one-time setup —
+and Bracketeering uses it. No shared cap.
+
 ## What's working today
 
-- Spotify OAuth (auth code flow with refresh)
+- PKCE OAuth (no client_secret anywhere)
 - Seed pool builder (Layer 1 recent + Layer 2 all-time + Layer 3 genre fill)
 - 128-track sub-in grid (mobile-first, source-coded album-art tiles)
-- Supabase wired (using shared side-projects DB, tables to be namespaced `bracketeering_*`)
 
 ## Not built yet
 
@@ -18,54 +31,38 @@ Vote "this or that" on 128 of your songs. Walk away with a real top 10 — and S
 - Bracket export image
 - Predict-my-top-10 share link
 
-## Setup
-
-```bash
-cp .env.example .env.local
-# Fill SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET (see below)
-# SUPABASE_* and SESSION_PASSWORD already set if running locally on Jack's VPS
-npm install
-npm run dev
-```
-
-### Spotify Developer App
-
-1. Go to <https://developer.spotify.com/dashboard>
-2. Create app → name "Bracketeering"
-3. Redirect URIs: add `http://127.0.0.1:3000/api/spotify/callback` for dev
-   (Spotify rejects `http://localhost` since Apr 2025), plus the Vercel
-   preview/prod URLs once deployed
-4. Copy Client ID + Client Secret into `.env.local`
-
-### Supabase
-
-Uses the shared side-projects database. All tables prefixed with
-`bracketeering_`. No schema required yet — the sub-in MVP runs on session-only state.
-
-## Tech
-
-- Next.js 16 (App Router, Turbopack)
-- TypeScript, Tailwind v4
-- Spotify Web API (typed `fetch` wrappers in `src/lib/spotify.ts`, no SDK)
-- iron-session for encrypted-cookie session
-- Supabase for persistence (when comparison engine lands)
-- `sharp` for auto cover-art composition
-
-## Routes
-
-| Path | What |
-|---|---|
-| `/` | Landing — "Connect Spotify" |
-| `/api/spotify/login` | Begin OAuth flow |
-| `/api/spotify/callback` | Token exchange |
-| `/api/pool` | Build the 128-track candidate pool (auth required) |
-| `/pool` | Sub-in screen — review the 128, drop what you don't want |
-
 ## Local dev
 
 ```bash
+npm install
 npm run dev
 # open http://127.0.0.1:3000 (Spotify OAuth requires 127.0.0.1, not localhost)
 ```
 
-First Spotify connect builds the pool in ~5 sec. After that it's instant.
+For local dev your redirect URI in your Spotify dev app should be
+`http://127.0.0.1:3000/callback/`. For prod (GitHub Pages) it's
+`https://jhomer192.github.io/bracketeering/callback/`. Each Spotify dev
+app can register multiple redirect URIs — add both.
+
+## Tech
+
+- Next.js 16 with `output: 'export'` (static SPA)
+- TypeScript, Tailwind v4
+- Spotify Web API via typed `fetch` wrappers in `src/lib/spotify.ts`
+- Web Crypto for PKCE (no node crypto, no shims)
+- localStorage for client_id + tokens, sessionStorage for the in-flight verifier
+
+## Routes (all static)
+
+| Path | What |
+|---|---|
+| `/` | Landing |
+| `/setup` | One-time: paste Client ID |
+| `/callback` | PKCE token exchange |
+| `/pool` | Sub-in screen — review the 128, drop what you don't want |
+
+## Deploy
+
+GitHub Actions (`.github/workflows/pages.yml`) builds on every push to
+`main` and deploys to GitHub Pages. The `NEXT_PUBLIC_BASE_PATH` env var
+is set to `/bracketeering` in CI so links resolve under the repo path.

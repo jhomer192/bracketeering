@@ -1,6 +1,31 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useState } from "react";
+import { getClientId, isAuthed, startLogin } from "@/lib/auth";
 
 export default function Home() {
+  const [hasClientId, setHasClientId] = useState(false);
+  const [authed, setAuthed] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setHasClientId(!!getClientId());
+    setAuthed(isAuthed());
+  }, []);
+
+  async function onConnect() {
+    if (!hasClientId) return; // Link will route to /setup
+    setBusy(true);
+    try {
+      await startLogin();
+    } catch {
+      setBusy(false);
+    }
+  }
+
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
   return (
     <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex flex-col items-center justify-center px-6 py-12">
       <div className="max-w-md w-full space-y-8 text-center">
@@ -12,13 +37,32 @@ export default function Home() {
           </p>
         </div>
 
-        <Link
-          href="/api/spotify/login"
-          className="inline-flex items-center justify-center gap-3 w-full h-14 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold text-lg"
-        >
-          <SpotifyMark />
-          Connect Spotify
-        </Link>
+        {authed ? (
+          <Link
+            href={`${basePath}/pool/`}
+            className="inline-flex items-center justify-center gap-3 w-full h-14 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold text-lg"
+          >
+            <SpotifyMark />
+            Continue →
+          </Link>
+        ) : hasClientId ? (
+          <button
+            onClick={onConnect}
+            disabled={busy}
+            className="inline-flex items-center justify-center gap-3 w-full h-14 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] disabled:opacity-50 transition text-black font-semibold text-lg"
+          >
+            <SpotifyMark />
+            {busy ? "Redirecting…" : "Connect Spotify"}
+          </button>
+        ) : (
+          <Link
+            href={`${basePath}/setup/`}
+            className="inline-flex items-center justify-center gap-3 w-full h-14 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold text-lg"
+          >
+            <SpotifyMark />
+            Connect Spotify
+          </Link>
+        )}
 
         <ol className="text-sm text-zinc-500 space-y-1 text-left max-w-xs mx-auto">
           <li>1. 90-sec one-time setup (Spotify dev keys).</li>

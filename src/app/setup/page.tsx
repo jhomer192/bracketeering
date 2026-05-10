@@ -1,21 +1,40 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useState } from "react";
+import { setClientId, startLogin, getRedirectUri, getClientId } from "@/lib/auth";
 
-const ERR_COPY: Record<string, string> = {
-  bad_client_id: "That doesn't look like a Spotify Client ID (should be 32 hex chars).",
-  bad_client_secret: "That doesn't look like a Client Secret (should be 32 hex chars).",
-  missing_creds: "Your session expired before we could finish. Please paste again.",
-};
+const CLIENT_ID_RE = /^[a-f0-9]{32}$/i;
 
-export default async function SetupPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ err?: string }>;
-}) {
-  const { err } = await searchParams;
-  const errMsg = err ? (ERR_COPY[err] ?? `Error: ${err}`) : null;
+export default function SetupPage() {
+  const [redirectUri, setRedirectUri] = useState<string>("");
+  const [value, setValue] = useState<string>("");
+  const [err, setErr] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://127.0.0.1:3000";
-  const redirectUri = `${baseUrl}/api/spotify/callback`;
+  useEffect(() => {
+    setRedirectUri(getRedirectUri());
+    const existing = getClientId();
+    if (existing) setValue(existing);
+  }, []);
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setErr(null);
+    const id = value.trim();
+    if (!CLIENT_ID_RE.test(id)) {
+      setErr("That doesn't look like a Spotify Client ID (should be 32 hex chars).");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      setClientId(id);
+      await startLogin(); // redirects to Spotify
+    } catch (e) {
+      setSubmitting(false);
+      setErr(e instanceof Error ? e.message : "unknown error");
+    }
+  }
 
   return (
     <main className="min-h-dvh bg-zinc-950 text-zinc-50 px-6 py-10 pb-24">
@@ -28,14 +47,14 @@ export default async function SetupPage({
           <p className="text-zinc-400 mt-2 leading-relaxed">
             Spotify caps each developer app at 5 friends total. To use Bracketeering
             without that cap, you make your own free Spotify dev app — takes about 90
-            seconds — and paste the keys below. We never see anyone else&apos;s music
-            data.
+            seconds — and paste the Client ID below. Bracketeering runs entirely in
+            your browser; we never see your music data or your Spotify keys.
           </p>
         </div>
 
-        {errMsg && (
+        {err && (
           <div className="rounded-lg border border-red-700/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
-            {errMsg}
+            {err}
           </div>
         )}
 
@@ -95,9 +114,9 @@ export default async function SetupPage({
             <Step n={4} />
             <div>
               <p>
-                On your new app&apos;s page → click <strong>Settings</strong> (top right).
-                Copy the <strong>Client ID</strong>, then click{" "}
-                <strong>View client secret</strong> and copy that too.
+                On your new app&apos;s page → click <strong>Settings</strong> (top right) and
+                copy the <strong>Client ID</strong>. (You can ignore the client secret —
+                Bracketeering uses PKCE and doesn&apos;t need it.)
               </p>
             </div>
           </li>
@@ -105,38 +124,38 @@ export default async function SetupPage({
           <li className="flex gap-3">
             <Step n={5} />
             <div>
-              <p>Paste them here:</p>
+              <p>Paste it here:</p>
             </div>
           </li>
         </ol>
 
         <form
-          method="POST"
-          action="/api/setup"
+          onSubmit={onSubmit}
           className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/40 p-5"
         >
-          <Field
-            name="client_id"
-            label="Client ID"
-            type="text"
-            placeholder="32-character hex string"
-            autoComplete="off"
-          />
-          <Field
-            name="client_secret"
-            label="Client secret"
-            type="password"
-            placeholder="32-character hex string"
-            autoComplete="off"
-          />
+          <label className="block">
+            <span className="block text-sm text-zinc-300 mb-1">Client ID</span>
+            <input
+              name="client_id"
+              type="text"
+              required
+              spellCheck={false}
+              autoComplete="off"
+              placeholder="32-character hex string"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="w-full h-11 rounded-lg bg-zinc-950 border border-zinc-800 px-3 font-mono text-sm focus:outline-none focus:border-zinc-600"
+            />
+          </label>
           <button
             type="submit"
-            className="w-full h-12 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold"
+            disabled={submitting}
+            className="w-full h-12 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] disabled:opacity-50 transition text-black font-semibold"
           >
-            Connect Spotify →
+            {submitting ? "Redirecting…" : "Connect Spotify →"}
           </button>
           <p className="text-xs text-zinc-500 text-center">
-            Stored encrypted; never shared with anyone else who uses Bracketeering.
+            Stored in your browser only. Never sent to us.
           </p>
         </form>
       </div>
@@ -152,40 +171,11 @@ function Step({ n }: { n: number }) {
   );
 }
 
-function Field({
-  name,
-  label,
-  type = "text",
-  placeholder,
-  autoComplete,
-}: {
-  name: string;
-  label: string;
-  type?: "text" | "password";
-  placeholder?: string;
-  autoComplete?: string;
-}) {
-  return (
-    <label className="block">
-      <span className="block text-sm text-zinc-300 mb-1">{label}</span>
-      <input
-        name={name}
-        type={type}
-        required
-        spellCheck={false}
-        autoComplete={autoComplete}
-        placeholder={placeholder}
-        className="w-full h-11 rounded-lg bg-zinc-950 border border-zinc-800 px-3 font-mono text-sm focus:outline-none focus:border-zinc-600"
-      />
-    </label>
-  );
-}
-
 function CopyBlock({ label, value }: { label: string; value: string }) {
   return (
     <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs break-all">
       <div className="text-zinc-500 text-[10px] uppercase tracking-wide mb-1">{label}</div>
-      {value}
+      {value || <span className="text-zinc-600">loading…</span>}
     </div>
   );
 }

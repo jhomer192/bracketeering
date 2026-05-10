@@ -1,15 +1,13 @@
-// Thin Spotify Web API client. No SDK — just typed fetch wrappers.
-// Handles token refresh transparently when the session has a refresh_token.
+// Thin Spotify Web API client — token-based, browser-only.
 //
-// BYO Client ID model: client_id + client_secret come from the user's
-// session (set on /setup), not from env. Only the redirect URI is server-
-// controlled (one shared URL per deployment, added by each user to their
-// own Spotify dev app's allow-list).
+// PKCE model: the client_id lives in localStorage (set on /setup), there
+// is no client_secret anywhere, and every Spotify call goes browser →
+// api.spotify.com directly. Spotify's CORS allow-list covers all the
+// endpoints this app touches.
 
-import type { SessionData } from "./session";
+import { getAccessToken } from "./auth";
 
 const API = "https://api.spotify.com/v1";
-const TOKEN_URL = "https://accounts.spotify.com/api/token";
 
 export const SCOPES = [
   "user-top-read",
@@ -40,102 +38,31 @@ export type SpotifyArtist = {
   genres: string[];
 };
 
-type RefreshResult = {
-  access_token: string;
-  expires_in: number;
-  refresh_token?: string;
-};
-
-/** Where Spotify redirects users back after consent. Server-controlled, one
- *  per deployment (each user adds this exact URL to their own dev app). */
-export function getRedirectUri() {
-  return requireEnv("SPOTIFY_REDIRECT_URI");
-}
-
-export function buildAuthUrl(session: SessionData, state: string) {
-  if (!session.client_id) throw new Error("no client_id in session — visit /setup first");
-  const params = new URLSearchParams({
-    client_id: session.client_id,
-    response_type: "code",
-    redirect_uri: getRedirectUri(),
-    scope: SCOPES,
-    state,
-    show_dialog: "false",
-  });
-  return `https://accounts.spotify.com/authorize?${params.toString()}`;
-}
-
-export async function exchangeCode(session: SessionData, code: string) {
-  const { client_id, client_secret } = mustHaveCreds(session);
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: getRedirectUri(),
-  });
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: basicAuth(client_id, client_secret),
-    },
-    body,
-  });
-  if (!res.ok) throw new Error(`spotify token exchange ${res.status}: ${await res.text()}`);
-  return (await res.json()) as RefreshResult & { refresh_token: string };
-}
-
-async function refreshIfNeeded(session: SessionData): Promise<string> {
-  const now = Date.now();
-  if (session.access_token && session.expires_at && session.expires_at > now + 30_000) {
-    return session.access_token;
-  }
-  if (!session.refresh_token) throw new Error("no refresh_token in session — re-auth required");
-  const { client_id, client_secret } = mustHaveCreds(session);
-
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: session.refresh_token,
-  });
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: basicAuth(client_id, client_secret),
-    },
-    body,
-  });
-  if (!res.ok) throw new Error(`spotify token refresh ${res.status}: ${await res.text()}`);
-  const data = (await res.json()) as RefreshResult;
-  session.access_token = data.access_token;
-  session.expires_at = now + data.expires_in * 1000;
-  if (data.refresh_token) session.refresh_token = data.refresh_token;
-  return data.access_token;
-}
-
-export async function spotifyFetch<T>(session: SessionData, path: string): Promise<T> {
-  const token = await refreshIfNeeded(session);
+/** GET helper that auto-refreshes the access token if needed. */
+export async function spotifyFetch<T>(path: string): Promise<T> {
+  const token = await getAccessToken();
   const res = await fetch(`${API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    throw new Error(`spotify ${path} → ${res.status}: ${await res.text()}`);
-  }
+  if (!res.ok) throw new Error(`spotify ${path} → ${res.status}: ${await res.text()}`);
   return (await res.json()) as T;
 }
 
-function mustHaveCreds(session: SessionData): { client_id: string; client_secret: string } {
-  if (!session.client_id || !session.client_secret) {
-    throw new Error("session missing BYO Spotify creds — visit /setup");
-  }
-  return { client_id: session.client_id, client_secret: session.client_secret };
-}
-
-function basicAuth(id: string, secret: string) {
-  return `Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`;
-}
-
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`missing env ${name}`);
-  return v;
+/** Generic Spotify call with method/body — used by playlist export. */
+export async function spotifyCall<T>(
+  path: string,
+  init: { method: string; body?: string; contentType?: string } = { method: "GET" },
+): Promise<T> {
+  const token = await getAccessToken();
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  if (init.contentType) headers["Content-Type"] = init.contentType;
+  const res = await fetch(`${API}${path}`, {
+    method: init.method,
+    headers,
+    body: init.body,
+  });
+  if (!res.ok) throw new Error(`spotify ${path} → ${res.status}: ${await res.text()}`);
+  // 204 no-content (playlist image upload) returns empty
+  const text = await res.text();
+  return (text ? JSON.parse(text) : ({} as T)) as T;
 }

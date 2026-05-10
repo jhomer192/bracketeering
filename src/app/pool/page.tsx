@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import type { PoolEntry, PoolSource } from "@/lib/pool";
+import { buildPool, type PoolEntry, type PoolSource } from "@/lib/pool";
+import { isAuthed } from "@/lib/auth";
 
 const TARGET = 128;
 
@@ -28,21 +29,23 @@ export default function PoolPage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/pool")
-      .then(async (r) => {
-        if (r.status === 401) {
-          window.location.href = "/";
-          return;
-        }
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      })
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
+    if (!isAuthed()) {
+      window.location.replace(`${basePath}/`);
+      return;
+    }
+
+    buildPool()
       .then((data) => {
-        if (cancelled || !data) return;
+        if (cancelled) return;
         setPool(data.pool);
         setComposition(data.composition);
       })
-      .catch((e) => !cancelled && setError(String(e)));
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+      });
     return () => {
       cancelled = true;
     };
@@ -63,7 +66,12 @@ export default function PoolPage() {
         <div className="max-w-md text-center space-y-4">
           <p className="text-red-400">Couldn&apos;t build your pool.</p>
           <p className="text-zinc-500 text-sm break-all">{error}</p>
-          <a href="/" className="text-zinc-300 underline">Try again</a>
+          <a
+            href={`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`}
+            className="text-zinc-300 underline"
+          >
+            Try again
+          </a>
         </div>
       </main>
     );
