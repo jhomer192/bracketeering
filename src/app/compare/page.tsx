@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   initCompare,
   vote,
@@ -15,11 +15,14 @@ import {
   saveRanked,
   clearCompareState,
 } from "@/lib/storage";
+import type { SpotifyTrack } from "@/lib/spotify";
 
 export default function ComparePage() {
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const [state, setState] = useState<CompareState | null>(null);
   const [missingPool, setMissingPool] = useState(false);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const existing = loadCompareState();
@@ -47,6 +50,91 @@ export default function ComparePage() {
 
   const matchup = useMemo(() => (state ? currentMatchup(state) : null), [state]);
 
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    setPlayingId(null);
+  }, []);
+
+  const togglePreview = useCallback(
+    (track: SpotifyTrack) => {
+      if (!track.preview_url) return;
+      let audio = audioRef.current;
+      if (!audio) {
+        audio = new Audio();
+        audio.addEventListener("ended", () => setPlayingId(null));
+        audio.volume = 0.7;
+        audioRef.current = audio;
+      }
+      if (playingId === track.id) {
+        audio.pause();
+        setPlayingId(null);
+        return;
+      }
+      audio.src = track.preview_url;
+      audio.currentTime = 0;
+      audio.play().then(() => setPlayingId(track.id)).catch(() => {
+        // Autoplay/CORS issues — fail quietly.
+        setPlayingId(null);
+      });
+    },
+    [playingId]
+  );
+
+  const pick = useCallback(
+    (winner: "a" | "b") => {
+      // Stop any preview audio so it doesn't bleed into the next matchup.
+      stopAudio();
+      setState((prev) => {
+        if (!prev) return prev;
+        const cloned: CompareState = JSON.parse(JSON.stringify(prev));
+        const next = vote(cloned, winner);
+        saveCompareState(next);
+        return next;
+      });
+    },
+    [stopAudio]
+  );
+
+  // Desktop keyboard shortcuts: arrow keys + 1/2/A/B = pick, space = preview A.
+  // Power-user mode for ripping through 370 votes on a laptop without your
+  // hand leaving the keyboard.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (!matchup) return;
+      if (e.key === "ArrowLeft" || e.key === "1" || e.key === "a" || e.key === "A") {
+        e.preventDefault();
+        pick("a");
+      } else if (e.key === "ArrowRight" || e.key === "2" || e.key === "b" || e.key === "B") {
+        e.preventDefault();
+        pick("b");
+      } else if (e.key === " ") {
+        e.preventDefault();
+        if (playingId) {
+          stopAudio();
+        } else if (matchup.a.preview_url) {
+          togglePreview(matchup.a);
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [matchup, pick, playingId, stopAudio, togglePreview]);
+
+  // Stop preview audio when the page unmounts.
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
   if (missingPool) {
     return (
       <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex items-center justify-center px-6 py-12">
@@ -68,100 +156,205 @@ export default function ComparePage() {
     );
   }
 
-  function pick(winner: "a" | "b") {
-    setState((prev) => {
-      if (!prev) return prev;
-      const cloned: CompareState = JSON.parse(JSON.stringify(prev));
-      const next = vote(cloned, winner);
-      saveCompareState(next);
-      return next;
-    });
-  }
-
   const total = state.votes + state.estRemaining;
   const pct = total > 0 ? Math.min(100, Math.round((state.votes / total) * 100)) : 0;
 
   return (
     <main
       className="bg-zinc-950 text-zinc-50 flex flex-col overflow-hidden"
-      // 100dvh adapts to mobile browser chrome; 100svh would lock to smallest.
-      // dvh is right here — we want to use the visible viewport at any moment.
+      // 100dvh adapts to mobile browser chrome — the two cards always fit
+      // in the visible viewport without page scroll.
       style={{ height: "100dvh" }}
     >
-      <header className="flex-none border-b border-zinc-800">
-        <div className="max-w-3xl mx-auto px-4 pt-2 pb-1.5 flex items-center justify-between text-xs">
-          <div className="text-zinc-400">
-            <span className="text-zinc-100 font-semibold">{state.votes}</span>
-            <span className="text-zinc-500"> / ~{state.votes + state.estRemaining}</span>
-          </div>
-          <div className="text-zinc-500">
-            top 25 · <span className="text-zinc-300 font-semibold">{state.ranked.length}</span>/25
-          </div>
+      {/* Header — minimal: thin progress bar + one-line meta. */}
+      <header className="flex-none">
+        <div className="h-[3px] bg-zinc-900">
+          <div
+            className="h-full bg-emerald-500 transition-[width] duration-300"
+            style={{ width: `${pct}%` }}
+          />
         </div>
-        <div className="h-1 bg-zinc-900">
-          <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
+        <div className="max-w-5xl mx-auto px-4 py-2 flex items-center justify-between text-[11px] tracking-wide">
+          <div className="text-zinc-500 tabular-nums">
+            <span className="text-zinc-200 font-semibold">{state.votes}</span>
+            <span className="text-zinc-600"> / ~{total}</span>
+          </div>
+          <div className="text-zinc-500 uppercase tracking-[0.18em] hidden sm:block">
+            Pick a winner
+          </div>
+          <div className="text-zinc-500 tabular-nums">
+            <span className="text-zinc-300">{state.ranked.length}</span>
+            <span className="text-zinc-600">/25 placed</span>
+          </div>
         </div>
       </header>
 
-      <p className="flex-none text-center text-zinc-400 text-xs pt-2 pb-1 uppercase tracking-wide">
-        which one wins?
-      </p>
-
-      <div className="flex-1 min-h-0 max-w-3xl w-full mx-auto px-3 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
-        <Choice track={matchup.a} onPick={() => pick("a")} />
-        <Choice track={matchup.b} onPick={() => pick("b")} />
+      {/* Mobile: vertical stack. Desktop: side-by-side. */}
+      <div className="flex-1 min-h-0 w-full max-w-6xl mx-auto px-3 sm:px-6 pb-2 sm:pb-6 pt-1">
+        <div className="h-full grid grid-rows-[1fr_auto_1fr] sm:grid-rows-1 sm:grid-cols-[1fr_auto_1fr] gap-2 sm:gap-5">
+          <Choice
+            label="A"
+            track={matchup.a}
+            onPick={() => pick("a")}
+            playing={playingId === matchup.a.id}
+            onTogglePreview={() => togglePreview(matchup.a)}
+          />
+          <Divider />
+          <Choice
+            label="B"
+            track={matchup.b}
+            onPick={() => pick("b")}
+            playing={playingId === matchup.b.id}
+            onTogglePreview={() => togglePreview(matchup.b)}
+          />
+        </div>
       </div>
 
-      <div className="flex-none text-center pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        <button
-          className="text-[11px] text-zinc-600 hover:text-zinc-400 underline px-4 py-1"
-          onClick={() => {
-            if (confirm("Start the bracket over? Your current votes will be lost.")) {
-              clearCompareState();
-              window.location.reload();
-            }
-          }}
-        >
-          start over
-        </button>
-      </div>
+      {/* Footer — keyboard hint on desktop, start-over on all sizes. */}
+      <footer className="flex-none pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div className="max-w-5xl mx-auto px-4 flex items-center justify-between gap-3">
+          <div className="hidden sm:flex items-center gap-2 text-[11px] text-zinc-600">
+            <Kbd>←</Kbd> A <span className="opacity-50">·</span>
+            <Kbd>→</Kbd> B <span className="opacity-50">·</span>
+            <Kbd>space</Kbd> preview
+          </div>
+          <button
+            className="text-[11px] text-zinc-600 hover:text-zinc-400 underline px-2 py-1 ml-auto"
+            onClick={() => {
+              if (confirm("Start the bracket over? Your current votes will be lost.")) {
+                clearCompareState();
+                window.location.reload();
+              }
+            }}
+          >
+            start over
+          </button>
+        </div>
+      </footer>
     </main>
   );
 }
 
 function Choice({
+  label,
   track,
   onPick,
+  playing,
+  onTogglePreview,
 }: {
-  track: { id: string; name: string; artists: Array<{ name: string }>; album: { name: string; images: Array<{ url: string }> } };
+  label: "A" | "B";
+  track: {
+    id: string;
+    name: string;
+    preview_url: string | null;
+    artists: Array<{ name: string }>;
+    album: { name: string; images: Array<{ url: string }> };
+  };
   onPick: () => void;
+  playing: boolean;
+  onTogglePreview: () => void;
 }) {
   const art = track.album.images?.[0]?.url ?? "";
+  const hasPreview = !!track.preview_url;
+
   return (
-    <button
-      onClick={onPick}
-      // h-full + min-h-0 + the parent's grid 1fr/1fr split = each tile takes
-      // exactly half the available vertical space on mobile. No scrolling
-      // required even on a short phone (e.g. iPhone SE 568px).
-      className="group relative h-full min-h-0 rounded-2xl overflow-hidden border border-zinc-800 active:scale-[0.98] active:border-emerald-500 transition select-none"
-    >
-      {art ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={art}
-          alt={track.album.name}
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          draggable={false}
-        />
-      ) : (
-        <div className="absolute inset-0 bg-zinc-800" />
-      )}
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/65 to-transparent p-3 pt-12 text-left">
-        <div className="text-[15px] font-semibold leading-tight line-clamp-2">{track.name}</div>
-        <div className="text-xs text-zinc-300 leading-tight line-clamp-1 mt-0.5">
+    <div className="relative h-full min-h-0 flex flex-col">
+      {/* The whole tile is the pick button — single tap target. */}
+      <button
+        onClick={onPick}
+        aria-label={`Pick ${track.name} by ${track.artists.map((a) => a.name).join(", ")}`}
+        className="group flex-1 min-h-0 relative rounded-2xl overflow-hidden bg-zinc-900 border border-zinc-800 active:scale-[0.985] active:border-emerald-500 transition select-none focus:outline-none focus-visible:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+      >
+        {art ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={art}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+            draggable={false}
+          />
+        ) : (
+          <div className="absolute inset-0 bg-zinc-800" />
+        )}
+
+        {/* A/B label, top-left. Visual anchor for keyboard shortcut users. */}
+        <span className="absolute top-2 left-2 sm:top-3 sm:left-3 inline-flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-black/55 backdrop-blur-sm text-[12px] sm:text-[13px] font-semibold text-white pointer-events-none">
+          {label}
+        </span>
+
+        {/* Preview play button, top-right. preview_url is null for many tracks
+            since Spotify's late-2024 deprecation, so only show when usable. */}
+        {hasPreview && (
+          <span
+            role="button"
+            aria-label={playing ? "Pause preview" : "Play 30-second preview"}
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePreview();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.stopPropagation();
+                e.preventDefault();
+                onTogglePreview();
+              }
+            }}
+            className={`absolute top-2 right-2 sm:top-3 sm:right-3 inline-flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-full backdrop-blur-sm transition cursor-pointer ${
+              playing
+                ? "bg-emerald-500 text-black"
+                : "bg-black/55 text-white hover:bg-black/70"
+            }`}
+          >
+            {playing ? <PauseIcon /> : <PlayIcon />}
+          </span>
+        )}
+      </button>
+
+      {/* Caption panel BELOW the art — clean, no gradient overlay clutter. */}
+      <div className="flex-none pt-2 sm:pt-3 px-1">
+        <div className="text-[15px] sm:text-base font-semibold leading-tight line-clamp-1">
+          {track.name}
+        </div>
+        <div className="text-[12px] sm:text-sm text-zinc-400 leading-tight line-clamp-1 mt-0.5">
           {track.artists.map((a) => a.name).join(", ")}
         </div>
       </div>
-    </button>
+    </div>
+  );
+}
+
+function Divider() {
+  return (
+    <div aria-hidden className="flex items-center justify-center text-zinc-600">
+      <span className="font-mono text-[10px] sm:text-xs uppercase tracking-[0.2em] px-2 py-0.5 rounded-full border border-zinc-800 bg-zinc-950">
+        vs
+      </span>
+    </div>
+  );
+}
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-300 font-mono text-[10px]">
+      {children}
+    </kbd>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M3.5 2.5v11l10-5.5z" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <rect x="3.5" y="2.5" width="3" height="11" rx="0.5" />
+      <rect x="9.5" y="2.5" width="3" height="11" rx="0.5" />
+    </svg>
   );
 }
