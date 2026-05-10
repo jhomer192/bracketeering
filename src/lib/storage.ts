@@ -31,7 +31,21 @@ const KEYS = {
   ranked: "bracketeering.ranked",
   /** Shared-pool import queued before login. Comma-sep Spotify track IDs. */
   pendingImport: "bracketeering.pending_import",
+  /** User's chosen pool size (64 or 128). Persists across sessions so the
+   *  rebuild button doesn't silently re-flip back to 128. */
+  poolSize: "bracketeering.pool_size",
 } as const;
+
+export type PoolSize = 64 | 128;
+const VALID_SIZES: PoolSize[] = [64, 128];
+
+export function getPoolSize(): PoolSize {
+  const v = parseInt(localStorage.getItem(KEYS.poolSize) ?? "", 10);
+  return (VALID_SIZES as number[]).includes(v) ? (v as PoolSize) : 128;
+}
+export function setPoolSize(size: PoolSize) {
+  localStorage.setItem(KEYS.poolSize, String(size));
+}
 
 export function setPendingImport(ids: string) {
   localStorage.setItem(KEYS.pendingImport, ids);

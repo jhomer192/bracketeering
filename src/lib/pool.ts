@@ -27,8 +27,7 @@ export type PoolEntry = SpotifyTrack & {
   source: PoolSource;
 };
 
-const TARGET = 128;
-const RECENT_TARGET = 64;
+const DEFAULT_TARGET = 128;
 
 /** Normalize a track title for cross-release dedup. Spotify gives the same
  *  recording multiple IDs across single/album/deluxe/regional/remaster
@@ -57,10 +56,15 @@ export function trackKey(t: { name: string; artists: Array<{ name: string }> }):
   return `${normalizeTitle(t.name)}|${artist}`;
 }
 
-export async function buildPool(): Promise<{
+export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   pool: PoolEntry[];
   composition: Record<PoolSource, number>;
 }> {
+  const TARGET = target;
+  // Recent-only floor: roughly half the pool should be recent enough to
+  // matter. Scales with target (32 for 64, 64 for 128) so smaller pools
+  // don't stuff in long_term backstop tracks the user barely listens to.
+  const RECENT_TARGET = Math.floor(TARGET / 2);
   const seen = new Set<string>();      // by Spotify track ID
   const seenKey = new Set<string>();   // by normalized name+artist (cross-release dedup)
   const out: PoolEntry[] = [];

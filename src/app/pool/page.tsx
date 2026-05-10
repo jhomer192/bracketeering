@@ -11,6 +11,9 @@ import {
   loadBuiltPool,
   clearBuiltPool,
   takePendingImport,
+  getPoolSize,
+  setPoolSize,
+  type PoolSize,
 } from "@/lib/storage";
 import {
   parseGroupParams,
@@ -22,7 +25,6 @@ import {
   type GroupParams,
 } from "@/lib/group";
 
-const TOTAL = 128;
 const PENDING_KEY = "bracketeering.pending_group"; // stash full querystring across login
 
 const SOURCE_DOT: Record<PoolSource, string> = {
@@ -51,6 +53,10 @@ export default function PoolPage() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [mode, setMode] = useState<Mode>({ kind: "solo" });
+  // poolSize is the *active* total — solo/shared read from localStorage,
+  // group inherits from the URL (?t=). Default to 128 until hydrated so
+  // SSR doesn't see a different value than the first client render.
+  const [poolSize, setPoolSizeState] = useState<PoolSize>(128);
 
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -83,13 +89,15 @@ export default function PoolPage() {
     const groupParams = parseGroupParams(url.searchParams);
 
     if (groupParams) {
+      // Group mode locks size to the host's choice (encoded in ?t=).
+      setPoolSizeState(groupParams.totalSize);
       enterGroupMode(groupParams, url, cancelled);
       return () => {
         cancelled = true;
       };
     }
 
-    // Plain ?p= without group params = "rank this curated 128" import.
+    // Plain ?p= without group params = "rank this curated pool" import.
     const pParam = url.searchParams.get("p");
     const pendingLegacy = pParam ?? takePendingImport();
     if (pendingLegacy) {
@@ -101,15 +109,20 @@ export default function PoolPage() {
       };
     }
 
-    // Solo mode: cached pool or build fresh.
+    // Solo mode: cached pool or build fresh. Size persists across sessions.
     setMode({ kind: "solo" });
+    const size = getPoolSize();
+    setPoolSizeState(size);
     const cached = loadBuiltPool();
-    if (cached) {
+    // If the cached pool's length doesn't match the current size choice
+    // (e.g. user toggled 128→64 and reloaded), drop it and rebuild.
+    if (cached && cached.pool.length === size) {
       setPool(cached.pool);
       setComposition(cached.composition);
       return;
     }
-    buildPool()
+    if (cached) clearBuiltPool();
+    buildPool(size)
       .then((data) => {
         if (cancelled) return;
         saveBuiltPool(data.pool, data.composition);
@@ -143,6 +156,9 @@ export default function PoolPage() {
           setPool(sharedPool);
           setComposition(comp);
           setMode({ kind: "shared" });
+          // Shared pool size follows whatever the curator sent — round to
+          // a known size so the target/progress UI reads cleanly.
+          setPoolSizeState(sharedPool.length <= 64 ? 64 : 128);
         })
         .catch((e) => {
           if (cancel) return;
@@ -164,12 +180,18 @@ export default function PoolPage() {
           : Promise.resolve<PoolEntry[]>([]);
 
       // Build (or load cached) the user's own pool, with friend tracks excluded.
+      // Size is dictated by the host (p.totalSize) — if the cached pool
+      // doesn't match, rebuild so the host's pick wins.
       const ownP = (async (): Promise<{ pool: PoolEntry[]; composition: Record<PoolSource, number> }> => {
         const cached = loadBuiltPool();
-        if (cached && cached.pool.every((t) => t.source !== "shared")) {
+        if (
+          cached &&
+          cached.pool.every((t) => t.source !== "shared") &&
+          cached.pool.length === p.totalSize
+        ) {
           return cached;
         }
-        const data = await buildPool();
+        const data = await buildPool(p.totalSize);
         saveBuiltPool(data.pool, data.composition);
         return data;
       })();
@@ -239,15 +261,35 @@ export default function PoolPage() {
     [pool, removed]
   );
 
-  // Targets vary by mode — solo/shared rank 128, group rank slotSize(N,K).
+  // Switching pool size invalidates the cached pool (it was sized for the old
+  // target) AND any in-flight compare state (it's a different population now).
+  // Persist the choice and reload — simplest way to re-run the build flow.
+  const onChangeSize = useCallback(
+    (n: PoolSize) => {
+      if (n === poolSize) return;
+      const hasRemovals = removed.size > 0;
+      const msg = hasRemovals
+        ? `Switch to top ${n}? Your tap-to-removes will reset and the pool refetches from Spotify.`
+        : `Switch to top ${n}? The pool refetches from Spotify.`;
+      if (!confirm(msg)) return;
+      setPoolSize(n);
+      clearBuiltPool();
+      clearCompareState();
+      window.location.reload();
+    },
+    [poolSize, removed.size]
+  );
+
+  // Targets vary by mode — solo/shared rank `poolSize`, group rank slotSize.
   const myTarget = useMemo(() => {
-    if (mode.kind === "group") return slotSizeFn(mode.params.groupSize, mode.params.slotIndex);
-    return TOTAL;
-  }, [mode]);
+    if (mode.kind === "group")
+      return slotSizeFn(mode.params.groupSize, mode.params.slotIndex, mode.params.totalSize);
+    return poolSize;
+  }, [mode, poolSize]);
 
   const friendCount = friendTracks.length;
   const totalCount = friendCount + myKept.length;
-  const totalTarget = mode.kind === "group" ? friendCount + myTarget : TOTAL;
+  const totalTarget = mode.kind === "group" ? friendCount + myTarget : poolSize;
 
   const myReady = myKept.length === myTarget;
 
@@ -306,6 +348,7 @@ export default function PoolPage() {
         basePath,
         groupSize: mode.params.groupSize,
         nextSlot: mode.params.slotIndex + 1,
+        totalSize: mode.params.totalSize,
         combinedIds: combined,
       });
       shareOrCopy(url, `Your turn — slot ${mode.params.slotIndex + 1}/${mode.params.groupSize}`);
@@ -327,7 +370,7 @@ export default function PoolPage() {
                 ? `Group bracket · slot ${mode.params.slotIndex}/${mode.params.groupSize}`
                 : mode.kind === "shared"
                 ? "Shared pool"
-                : "Your 128"}
+                : `Your ${poolSize}`}
             </h1>
             {mode.kind === "group" ? (
               <p className="text-[11px] text-zinc-500 leading-tight truncate">
@@ -369,26 +412,26 @@ export default function PoolPage() {
               <>
                 <div
                   className={`text-base font-semibold leading-tight tabular-nums ${
-                    myReady ? "text-emerald-400" : myKept.length > TOTAL ? "text-amber-400" : "text-zinc-200"
+                    myReady ? "text-emerald-400" : myKept.length > poolSize ? "text-amber-400" : "text-zinc-200"
                   }`}
                 >
-                  {myKept.length}/{TOTAL}
+                  {myKept.length}/{poolSize}
                 </div>
                 <div className="text-[11px] text-zinc-500 leading-tight">
                   {myReady
                     ? "ready"
-                    : myKept.length < TOTAL
-                    ? `add ${TOTAL - myKept.length}`
-                    : `remove ${myKept.length - TOTAL}`}
+                    : myKept.length < poolSize
+                    ? `add ${poolSize - myKept.length}`
+                    : `remove ${myKept.length - poolSize}`}
                 </div>
               </>
             )}
           </div>
         </div>
 
-        {mode.kind === "group" && expectedFromCount(mode.params.groupSize, mode.params.slotIndex) !== friendCount && (
+        {mode.kind === "group" && expectedFromCount(mode.params.groupSize, mode.params.slotIndex, mode.params.totalSize) !== friendCount && (
           <div className="bg-amber-950/40 border-t border-amber-800/40 px-4 py-1.5 text-[11px] text-amber-200">
-            Expected {expectedFromCount(mode.params.groupSize, mode.params.slotIndex)} tracks from earlier slots, got
+            Expected {expectedFromCount(mode.params.groupSize, mode.params.slotIndex, mode.params.totalSize)} tracks from earlier slots, got
             {" "}{friendCount}. Some IDs may have been invalid.
           </div>
         )}
@@ -408,6 +451,34 @@ export default function PoolPage() {
                 <FriendTile key={`f-${t.id}`} track={t} />
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Solo-mode size toggle. Hidden in shared/group because the size
+            is dictated by the inbound link, not the current user. */}
+        {mode.kind === "solo" && (
+          <div className="px-1 mb-2 flex items-center gap-2">
+            <span className="text-[11px] uppercase tracking-wider text-zinc-500">Pool size</span>
+            <div className="inline-flex rounded-full border border-zinc-800 bg-zinc-900 p-0.5" role="tablist">
+              {([64, 128] as PoolSize[]).map((n) => (
+                <button
+                  key={n}
+                  role="tab"
+                  aria-selected={poolSize === n}
+                  onClick={() => onChangeSize(n)}
+                  className={`px-3 h-7 rounded-full text-xs font-semibold tabular-nums transition ${
+                    poolSize === n
+                      ? "bg-zinc-100 text-zinc-900"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <span className="text-[11px] text-zinc-600 hidden sm:inline">
+              {poolSize === 64 ? "quicker · ~100 votes" : "deeper · ~220 votes"}
+            </span>
           </div>
         )}
 
@@ -524,6 +595,7 @@ export default function PoolPage() {
           onClose={() => setGroupModalOpen(false)}
           keptIds={myKept.map((t) => t.id)}
           basePath={basePath}
+          initialTotal={poolSize}
         />
       )}
     </main>
@@ -600,14 +672,17 @@ function GroupSetupModal({
   onClose,
   keptIds,
   basePath,
+  initialTotal,
 }: {
   onClose: () => void;
   keptIds: string[];
   basePath: string;
+  initialTotal: PoolSize;
 }) {
   const [size, setSize] = useState(4);
+  const [totalSize, setTotalSize] = useState<PoolSize>(initialTotal);
 
-  const mySize = slotSizeFn(size, 1);
+  const mySize = slotSizeFn(size, 1, totalSize);
   const enoughKept = keptIds.length >= mySize;
 
   function onStart() {
@@ -619,9 +694,13 @@ function GroupSetupModal({
       basePath,
       groupSize: size,
       nextSlot: 2,
+      totalSize,
       combinedIds: myContribution,
     });
-    shareOrCopy(url, `Slot 2/${size} — your turn to add ${slotSizeFn(size, 2)} tracks`);
+    shareOrCopy(
+      url,
+      `Slot 2/${size} — your turn to add ${slotSizeFn(size, 2, totalSize)} tracks`,
+    );
     onClose();
   }
 
@@ -632,8 +711,29 @@ function GroupSetupModal({
           <h2 className="text-lg font-semibold">Group bracket</h2>
           <p className="text-zinc-400 text-sm mt-1 leading-snug">
             Up to 4 friends each contribute a slice of the pool. Last person ranks
-            the merged 128.
+            the merged {totalSize}.
           </p>
+        </div>
+
+        <div>
+          <label className="block text-xs uppercase tracking-wider text-zinc-500 mb-2">
+            Total pool size
+          </label>
+          <div className="flex gap-2">
+            {([64, 128] as PoolSize[]).map((n) => (
+              <button
+                key={n}
+                onClick={() => setTotalSize(n)}
+                className={`flex-1 h-11 rounded-lg border font-semibold transition ${
+                  totalSize === n
+                    ? "border-emerald-500 bg-emerald-500/10 text-emerald-300"
+                    : "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-600"
+                }`}
+              >
+                Top {n}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div>
@@ -660,7 +760,9 @@ function GroupSetupModal({
         <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-sm space-y-1">
           <div className="flex justify-between">
             <span className="text-zinc-400">Each slot contributes:</span>
-            <span className="font-mono">{slotSizeFn(size, 1)} (last: {slotSizeFn(size, size)})</span>
+            <span className="font-mono">
+              {slotSizeFn(size, 1, totalSize)} (last: {slotSizeFn(size, size, totalSize)})
+            </span>
           </div>
           <div className="flex justify-between">
             <span className="text-zinc-400">You contribute:</span>
@@ -712,7 +814,7 @@ function ShareButton({ kept }: { kept: PoolEntry[] }) {
       try {
         await nav.share({
           title: "Bracketeering pool",
-          text: "Rank these 128 songs:",
+          text: `Rank these ${kept.length} songs:`,
           url,
         });
         return;
