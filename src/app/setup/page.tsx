@@ -36,12 +36,11 @@ export default function SetupPage() {
     }
   }
 
-  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   return (
     <main className="min-h-dvh bg-zinc-950 text-zinc-50 px-4 sm:px-6 py-6 sm:py-10 pb-[max(2rem,env(safe-area-inset-bottom))]">
       <div className="max-w-xl mx-auto space-y-6 sm:space-y-8">
         <div>
-          <Link href={`${basePath}/`} className="text-zinc-500 text-sm hover:text-zinc-300">
+          <Link href="/" className="text-zinc-500 text-sm hover:text-zinc-300">
             ← back
           </Link>
           <h1 className="text-2xl sm:text-3xl font-bold mt-2">One-time setup</h1>

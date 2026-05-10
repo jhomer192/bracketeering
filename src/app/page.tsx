@@ -24,8 +24,6 @@ export default function Home() {
     }
   }
 
-  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-
   return (
     <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex flex-col items-center justify-center px-5 py-10 sm:py-12">
       <div className="max-w-md w-full space-y-7 sm:space-y-8 text-center">
@@ -39,7 +37,7 @@ export default function Home() {
 
         {authed ? (
           <Link
-            href={`${basePath}/pool/`}
+            href="/pool/"
             className="inline-flex items-center justify-center gap-3 w-full h-14 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold text-lg"
           >
             <SpotifyMark />
@@ -56,7 +54,7 @@ export default function Home() {
           </button>
         ) : (
           <Link
-            href={`${basePath}/setup/`}
+            href="/setup/"
             className="inline-flex items-center justify-center gap-3 w-full h-14 rounded-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] transition text-black font-semibold text-lg"
           >
             <SpotifyMark />
