@@ -1,20 +1,92 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { PoolEntry } from "@/lib/pool";
-import { loadRanked, clearRunState } from "@/lib/storage";
+import { loadKeptPool, loadRanked, clearRunState } from "@/lib/storage";
 import { exportPlaylists, type ExportResult } from "@/lib/export";
 import { isAuthed, hasExportScopes, startLogin } from "@/lib/auth";
 import { getQuips } from "@/lib/quips";
 
+// Tier breakpoints. Voted: top 25 (compare engine's FLOOR). Beyond that,
+// tracks are ordered by their pool position (best Spotify signal first).
+type Tier = "top10" | "top25" | "top50" | "top100" | "top128";
+const TIER_LIMITS: Record<Tier, number> = {
+  top10: 10,
+  top25: 25,
+  top50: 50,
+  top100: 100,
+  top128: 128,
+};
+const TIER_LABELS: Record<Tier, string> = {
+  top10: "Top 10",
+  top25: "Top 25",
+  top50: "Top 50",
+  top100: "Top 100",
+  top128: "Top 128",
+};
+const TIER_ORDER: Tier[] = ["top10", "top25", "top50", "top100", "top128"];
+
+/** Which tier a 1-indexed rank falls into. */
+function tierFor(rank: number): Tier {
+  if (rank <= 10) return "top10";
+  if (rank <= 25) return "top25";
+  if (rank <= 50) return "top50";
+  if (rank <= 100) return "top100";
+  return "top128";
+}
+
+// Per-tier styling. Numbered medallion + left border give each row a
+// glanceable tier without making the list feel like a kindergarten chart.
+const TIER_STYLES: Record<
+  Tier,
+  { border: string; bg: string; medallion: string; label: string; tone: string }
+> = {
+  top10: {
+    border: "border-amber-500/60",
+    bg: "bg-gradient-to-r from-amber-950/40 to-zinc-900/40",
+    medallion: "bg-amber-500 text-black",
+    label: "text-amber-300",
+    tone: "Top 10 · gold",
+  },
+  top25: {
+    border: "border-zinc-400/40",
+    bg: "bg-zinc-900/50",
+    medallion: "bg-zinc-300 text-black",
+    label: "text-zinc-200",
+    tone: "11–25 · silver",
+  },
+  top50: {
+    border: "border-orange-700/50",
+    bg: "bg-zinc-900/40",
+    medallion: "bg-orange-700/80 text-white",
+    label: "text-orange-300",
+    tone: "26–50 · bronze",
+  },
+  top100: {
+    border: "border-zinc-700",
+    bg: "bg-zinc-900/30",
+    medallion: "bg-zinc-700 text-zinc-200",
+    label: "text-zinc-400",
+    tone: "51–100",
+  },
+  top128: {
+    border: "border-zinc-800",
+    bg: "bg-zinc-950/60",
+    medallion: "bg-zinc-800 text-zinc-500",
+    label: "text-zinc-500",
+    tone: "101–128",
+  },
+};
+
 export default function RevealPage() {
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const [ranked, setRanked] = useState<PoolEntry[] | null>(null);
+  const [keptPool, setKeptPool] = useState<PoolEntry[] | null>(null);
   const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [exported, setExported] = useState<ExportResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
+  const [tier, setTier] = useState<Tier>("top10");
   const [copied, setCopied] = useState(false);
   const [quips, setQuips] = useState<string[]>([]);
   const [needsReauth, setNeedsReauth] = useState(false);
@@ -30,11 +102,31 @@ export default function RevealPage() {
       return;
     }
     setRanked(r);
+    setKeptPool(loadKeptPool());
     setQuips(getQuips(r, 2));
     // Pre-flight: tokens predating any scope addition will 403 mid-export.
     // Surface a reconnect CTA up front instead of a confusing error later.
     if (!hasExportScopes()) setNeedsReauth(true);
   }, [basePath]);
+
+  // Stitch a full 128 ordering: vote-decided top 25, then the rest of the
+  // kept pool (sans top-25 dups) in their pool order — which is best-
+  // Spotify-signal-first by build construction. Bounded to 128.
+  const full128 = useMemo<PoolEntry[]>(() => {
+    if (!ranked) return [];
+    if (!keptPool) return ranked;
+    const rankedIds = new Set(ranked.map((t) => t.id));
+    const tail = keptPool.filter((t) => !rankedIds.has(t.id));
+    return [...ranked, ...tail].slice(0, 128);
+  }, [ranked, keptPool]);
+
+  const limit = TIER_LIMITS[tier];
+  // Cap the picker at how many entries we actually have — if the pool was
+  // smaller than 128 (e.g. small library) hide the higher tier buttons.
+  const availableTiers = useMemo<Tier[]>(
+    () => TIER_ORDER.filter((t) => TIER_LIMITS[t] <= Math.max(10, full128.length)),
+    [full128.length],
+  );
 
   if (missing) {
     return (
@@ -81,21 +173,52 @@ export default function RevealPage() {
     });
   }
 
-  const top10 = ranked.slice(0, 10);
-  const visible = showAll ? ranked : top10;
+  const visible = full128.slice(0, Math.min(limit, full128.length));
 
   return (
     <main className="min-h-dvh bg-zinc-950 text-zinc-50 pb-[max(2rem,env(safe-area-inset-bottom))]">
       <header className="border-b border-zinc-800">
         <div className="max-w-2xl mx-auto px-4 py-4 sm:py-5">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-            Your top {showAll ? ranked.length : 10}
+            Your {TIER_LABELS[tier]}
           </h1>
           <p className="text-zinc-500 text-xs sm:text-sm mt-1">
-            Vote-decided ranking · {ranked.length} fully ranked
+            Top {ranked.length} vote-decided
+            {full128.length > ranked.length
+              ? ` · ${full128.length - ranked.length} more by Spotify signal`
+              : ""}
           </p>
         </div>
       </header>
+
+      {/* Tier picker — pill toggle scrollable on narrow screens. Hidden
+          tiers (e.g. top 100 if pool is only 80 deep) just don't render. */}
+      <div className="max-w-2xl mx-auto px-3 sm:px-4 mt-4">
+        <div
+          role="tablist"
+          aria-label="Show ranking depth"
+          className="inline-flex items-center gap-1 p-1 rounded-full border border-zinc-800 bg-zinc-900/60 max-w-full overflow-x-auto no-scrollbar"
+        >
+          {availableTiers.map((t) => {
+            const active = t === tier;
+            return (
+              <button
+                key={t}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTier(t)}
+                className={`flex-none text-xs sm:text-sm font-medium px-3 sm:px-3.5 h-8 rounded-full transition tabular-nums ${
+                  active
+                    ? "bg-zinc-50 text-black"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {TIER_LABELS[t]}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       {quips.length > 0 && (
         <section className="max-w-2xl mx-auto px-3 sm:px-4 mt-4 sm:mt-5">
@@ -130,51 +253,69 @@ export default function RevealPage() {
       )}
 
       <ol className="max-w-2xl mx-auto px-3 sm:px-4 mt-4 sm:mt-6 space-y-1.5">
-        {visible.map((t, i) => (
-          <li
-            key={t.id}
-            className="flex items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-1.5 pr-3"
-          >
-            <div className="w-6 sm:w-8 text-right font-mono text-zinc-500 text-xs sm:text-sm tabular-nums">
-              {i + 1}
-            </div>
-            {t.album.images?.[0]?.url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={t.album.images[0].url}
-                alt=""
-                className="w-11 h-11 sm:w-12 sm:h-12 rounded-md object-cover flex-none"
-              />
-            ) : (
-              <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-md bg-zinc-800 flex-none" />
-            )}
-            <div className="min-w-0 flex-1">
-              <div className="font-medium text-sm leading-tight truncate">{t.name}</div>
-              <div className="text-[11px] sm:text-xs text-zinc-500 leading-tight truncate mt-0.5">
-                {t.artists.map((a) => a.name).join(", ")}
+        {visible.map((t, i) => {
+          const rank = i + 1;
+          const rowTier = tierFor(rank);
+          const style = TIER_STYLES[rowTier];
+          // Tier divider — render once, just before the first row of a new tier.
+          const prevTier = i === 0 ? null : tierFor(i);
+          const isFirstOfTier = prevTier !== rowTier;
+          return (
+            <li key={t.id} className="contents">
+              {isFirstOfTier && (
+                <div
+                  aria-hidden
+                  className="flex items-center gap-3 pt-3 pb-1 first:pt-0"
+                >
+                  <span
+                    className={`text-[10px] uppercase tracking-[0.22em] font-semibold ${style.label}`}
+                  >
+                    {style.tone}
+                  </span>
+                  <span className="flex-1 h-px bg-zinc-800" />
+                </div>
+              )}
+              <div
+                className={`flex items-center gap-2.5 rounded-lg border ${style.border} ${style.bg} p-1.5 pr-3`}
+              >
+                <div
+                  className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-mono text-[11px] sm:text-xs tabular-nums font-semibold flex-none ${style.medallion}`}
+                  aria-label={`Rank ${rank}`}
+                >
+                  {rank}
+                </div>
+                {t.album.images?.[0]?.url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={t.album.images[0].url}
+                    alt=""
+                    className="w-11 h-11 sm:w-12 sm:h-12 rounded-md object-cover flex-none"
+                  />
+                ) : (
+                  <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-md bg-zinc-800 flex-none" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-sm leading-tight truncate">{t.name}</div>
+                  <div className="text-[11px] sm:text-xs text-zinc-500 leading-tight truncate mt-0.5">
+                    {t.artists.map((a) => a.name).join(", ")}
+                  </div>
+                </div>
               </div>
-            </div>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ol>
 
       <div className="max-w-2xl mx-auto px-4 mt-3 flex items-center gap-4 flex-wrap">
-        {ranked.length > 10 && (
-          <button
-            onClick={() => setShowAll((v) => !v)}
-            className="text-sm text-zinc-400 hover:text-zinc-200 underline"
-          >
-            {showAll ? "show top 10 only" : `show all ${ranked.length}`}
-          </button>
-        )}
         <button
           onClick={async () => {
-            // "1. Track — Artist[, Artist]" lines, with a small header and a
-            // share line so it pastes nicely into Notes / iMessage / a tweet.
-            const list = (showAll ? ranked : ranked.slice(0, 10))
+            // "1. Track — Artist[, Artist]" lines for whatever tier is
+            // currently visible, with a small header and a share line so
+            // it pastes nicely into Notes / iMessage / a tweet.
+            const list = visible
               .map((t, i) => `${i + 1}. ${t.name} — ${t.artists.map((a) => a.name).join(", ")}`)
               .join("\n");
-            const header = `My top ${showAll ? ranked.length : 10} (Bracketeering)`;
+            const header = `My ${TIER_LABELS[tier]} (Bracketeering)`;
             const text = `${header}\n\n${list}\n\nbracketeer yours: https://jhomer192.github.io/bracketeering/`;
             try {
               await navigator.clipboard.writeText(text);
@@ -186,7 +327,7 @@ export default function RevealPage() {
           }}
           className="text-sm text-zinc-400 hover:text-zinc-200 underline"
         >
-          {copied ? "copied ✓" : "copy as text"}
+          {copied ? "copied ✓" : `copy ${TIER_LABELS[tier].toLowerCase()} as text`}
         </button>
       </div>
 
