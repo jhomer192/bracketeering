@@ -1,26 +1,33 @@
-// Build the 128-track candidate pool:
-//   Layer 1 — playlist (your own playlists' tracks) ← strongest curation signal
-//   Layer 2 — medium_term top (last 6 months)        ← current favorites
-//   Layer 3 — long_term top (last several years)     ← all-time favorites
-//   Layer 4 — short_term top (last 4 weeks)          ← only if pool < target
-//   Layer 5 — genre fill                              ← last-resort backstop
+// Build the 128-track candidate pool via a pass-based algorithm.
 //
-// Layers 1-3 are admitted UNCONDITIONALLY: playlist + medium + all 50 of
-// long_term go in regardless of how full the pool is, because Spotify's
-// long_term top 50 is the most defensible "this person actually likes
-// this song" list available. If overshoots happen they're trimmed at the
-// end, but short_term and genre_fill are the only layers that get
-// skipped when the pool is already at target.
+// Each pass takes a balanced slice from four signals:
+//   - long_term top tracks      ← Spotify's all-time favorites
+//   - medium_term top tracks    ← last 6 months
+//   - short_term top tracks     ← last 4 weeks; capped at 5 forever
+//   - playlist cross-frequency  ← songs appearing in many of the user's
+//                                  own playlists (auto-gen excluded)
 //
-// Removed (with intent, see commits):
-//   - saved library: tapping the heart means "remember this exists," not
-//     "I love this song." Most-recent-saves was producing one-time-played
-//     tracks in brackets, which is the exact opposite of the goal.
-//   - recently_played replays: ≥2 plays in the last 50 tracks heard is
-//     noise (one afternoon of listening), not a favorite signal. short_term
-//     top covers recent favorites with Spotify's own play-volume weighting.
+// Pass 1: 20 / 20 / 5 / 20    = up to 65 admits
+// Pass 2: 40 / 40 / 5 / 40    = up to 125 cumulative
+// Pass 3: 50 / 50 / 5 / 80    = up to 185 cumulative (Spotify maxes top
+//                               tracks at 50 per window, so 50 is the
+//                               ceiling on long/medium; playlist keeps
+//                               expanding by appearance count)
+// Pass 4: drain remaining playlist cross-frequency entries
+//
+// short_term stops growing after pass 1 because the 4-week window is
+// noisy: a one-off "you have to hear this" play can crack top 50 of a
+// small denominator. Top 5 is the only short_term cohort that requires
+// real listening volume to occupy.
+//
+// Emergency: liked songs (saved library). Falls back here only if the
+// four primary signals don't fill the pool.
+//
+// Absolute emergency: editorial popular tracks (Spotify Today's Top Hits
+// playlist). Triggers when the user has fewer total played+saved tracks
+// than the pool target — i.e. a brand-new account.
 
-import { spotifyFetch, type SpotifyTrack, type SpotifyArtist } from "./spotify";
+import { spotifyFetch, type SpotifyTrack } from "./spotify";
 
 export type PoolSource =
   | "playlist"
@@ -38,6 +45,20 @@ export type PoolEntry = SpotifyTrack & {
 };
 
 const DEFAULT_TARGET = 128;
+
+// How many tracks to admit from each signal per pass. short_term is fixed
+// at 5 across all passes (the top-5-only rule); long/medium are capped at
+// Spotify's 50 max; playlist cross-frequency keeps growing until exhausted.
+const PASS_QUOTAS = [
+  { long: 20, medium: 20, short: 5, playlist: 20 },
+  { long: 40, medium: 40, short: 5, playlist: 40 },
+  { long: 50, medium: 50, short: 5, playlist: 80 },
+] as const;
+
+// Spotify editorial playlist used as the absolute-emergency fallback when
+// the user has fewer played+saved tracks than the pool target.
+// "Today's Top Hits" — a stable Spotify-owned playlist that always exists.
+const TODAYS_TOP_HITS_PLAYLIST_ID = "37i9dQZF1DXcBWIGoYBM5M";
 
 /** Normalize a track title for cross-release dedup. Spotify gives the same
  *  recording multiple IDs across single/album/deluxe/regional/remaster
@@ -75,71 +96,107 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   const seenKey = new Set<string>();   // by normalized name+artist (cross-release dedup)
   const out: PoolEntry[] = [];
 
-  const tag = (tracks: SpotifyTrack[], source: PoolSource) => {
+  // Admit every track in `tracks` (subject to dedup + TARGET ceiling),
+  // tagged with `source`. Caller controls volume by slicing `tracks` before
+  // passing. The dedup check makes this a no-op for tracks already in the
+  // pool from a stronger signal.
+  const admit = (tracks: SpotifyTrack[], source: PoolSource): void => {
     for (const t of tracks) {
+      if (out.length >= TARGET) break;
       if (!t || !t.id || seen.has(t.id)) continue;
       const key = trackKey(t);
-      if (seenKey.has(key)) continue; // same song under a different ID
+      if (seenKey.has(key)) continue;
       seen.add(t.id);
       seenKey.add(key);
       out.push({ ...t, source });
     }
   };
 
-  // ---------- Layer 1 — user's own playlists ----------
-  // Tracks the user manually compiled into their own playlists are the
-  // strongest "I genuinely chose this" signal Spotify exposes — far stronger
-  // than any algorithmic top list. Best-effort: skip silently on scope error.
-  try {
-    const playlistTracks = await fetchOwnPlaylistTracks();
-    tag(playlistTracks, "playlist");
-  } catch {
-    // 403 = old token without playlist-read-private scope; user re-auth fixes.
-  }
-
-  // ---------- Layer 2 — medium_term top (last 6 months) ----------
-  // Best "current favorites" signal — recent enough to reflect actual taste,
-  // long enough to require sustained listening to register. Admitted in full
-  // unconditionally.
-  const mediumTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
-    "/me/top/tracks?time_range=medium_term&limit=50"
-  );
-  tag(mediumTerm.items, "medium_term");
-
-  // ---------- Layer 3 — long_term top (all-time) ----------
-  // Spotify's long_term top 50 is the strongest "this person actually likes
-  // this song" list we can pull. Admitted in full unconditionally, even if
-  // the pool is already above target — final trim happens at the end and
-  // prefers to drop short_term/genre_fill before long_term.
-  const longTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
-    "/me/top/tracks?time_range=long_term&limit=50"
-  );
-  tag(longTerm.items, "long_term");
-
-  // ---------- Layer 4 — short_term top (last 4 weeks) ----------
-  // Only fill from short_term if the pool is short of target. Short_term
-  // entries that already overlap with playlist/medium/long are already in
-  // the pool with their stronger source tag (tag() won't re-admit them).
-  // Spotify orders /me/top/tracks by descending listening volume, so when
-  // we DO need to fill, the top entries are the ones the user leaned into.
-  if (out.length < TARGET) {
-    const shortTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
+  // Pre-fetch the four signals in parallel — they're independent and each
+  // costs 1-9 API calls. Doing them upfront avoids per-pass round-trips.
+  const [longTermRes, mediumTermRes, shortTermRes, playlistFreqList] = await Promise.all([
+    spotifyFetch<{ items: SpotifyTrack[] }>(
+      "/me/top/tracks?time_range=long_term&limit=50"
+    ).catch(() => ({ items: [] as SpotifyTrack[] })),
+    spotifyFetch<{ items: SpotifyTrack[] }>(
+      "/me/top/tracks?time_range=medium_term&limit=50"
+    ).catch(() => ({ items: [] as SpotifyTrack[] })),
+    spotifyFetch<{ items: SpotifyTrack[] }>(
       "/me/top/tracks?time_range=short_term&limit=50"
-    );
-    tag(shortTerm.items, "short_term");
+    ).catch(() => ({ items: [] as SpotifyTrack[] })),
+    // playlist cross-frequency: catch errors so a 403 (missing scope)
+    // doesn't kill the whole build.
+    crossPlaylistFrequency().catch(() => [] as SpotifyTrack[]),
+  ]);
+  const longTerm = longTermRes.items ?? [];
+  const mediumTerm = mediumTermRes.items ?? [];
+  const shortTerm = shortTermRes.items ?? [];
+
+  // Per-signal position cursor: tracks how many positions from the source
+  // list each pass has already consumed. Each pass slices [cursor, quota),
+  // covering only NEW positions — so if a high-rank long_term track was
+  // already admitted via playlist (dedup'd inside admit), we don't waste
+  // work re-checking it in pass 2.
+  const cursor = { long: 0, medium: 0, short: 0, playlist: 0 };
+
+  for (const quota of PASS_QUOTAS) {
+    if (out.length >= TARGET) break;
+    admit(longTerm.slice(cursor.long, quota.long), "long_term");
+    cursor.long = quota.long;
+    if (out.length >= TARGET) break;
+    admit(mediumTerm.slice(cursor.medium, quota.medium), "medium_term");
+    cursor.medium = quota.medium;
+    if (out.length >= TARGET) break;
+    admit(shortTerm.slice(cursor.short, quota.short), "short_term");
+    cursor.short = quota.short;
+    if (out.length >= TARGET) break;
+    admit(playlistFreqList.slice(cursor.playlist, quota.playlist), "playlist");
+    cursor.playlist = quota.playlist;
   }
 
-  // ---------- Layer 5 — genre fill (last-resort backstop) ----------
+  // Drain the rest of the playlist cross-frequency list. Lower appearance
+  // counts are weaker signal but still real curation — they beat saves.
+  if (out.length < TARGET && cursor.playlist < playlistFreqList.length) {
+    admit(playlistFreqList.slice(cursor.playlist), "playlist");
+  }
+
+  // Emergency: liked songs. Only fires when the four primary signals
+  // didn't fill the pool — e.g. a user with few playlists and limited
+  // listening history. We pull saved library pages until the pool fills
+  // or saves are exhausted.
   if (out.length < TARGET) {
-    try {
-      const genreFill = await fillFromGenres(TARGET - out.length, seen);
-      tag(genreFill, "genre_fill");
-    } catch {
-      // Genre fill is best-effort; pool can run smaller.
+    let offset = 0;
+    while (out.length < TARGET && offset < 500) {
+      const page = await spotifyFetch<{
+        items: Array<{ track: SpotifyTrack | null }>;
+        next: string | null;
+      }>(`/me/tracks?limit=50&offset=${offset}`).catch(() => null);
+      if (!page) break;
+      const tracks = (page.items ?? [])
+        .map((i) => i.track)
+        .filter((t): t is SpotifyTrack => !!t && !!t.id);
+      const before = out.length;
+      admit(tracks, "saved_early");
+      if (out.length === before && !page.next) break; // nothing new this page
+      if (!page.next) break;
+      offset += 50;
     }
   }
 
-  // Trim to target
+  // Absolute emergency: editorial popular fallback. Only fires when the
+  // user's combined played + saved + playlist signal can't fill the pool
+  // (effectively, brand-new accounts).
+  if (out.length < TARGET) {
+    try {
+      const popular = await playlistTracks(TODAYS_TOP_HITS_PLAYLIST_ID);
+      admit(popular, "genre_fill");
+    } catch {
+      // Best-effort — pool can run smaller than TARGET if even this fails.
+    }
+  }
+
+  // Defensive: nothing above can overshoot because admit() respects
+  // TARGET, but slice() makes that contract explicit.
   const pool = out.slice(0, TARGET);
 
   const composition = pool.reduce<Record<PoolSource, number>>(
@@ -163,36 +220,73 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   return { pool, composition };
 }
 
-async function fillFromGenres(
-  needed: number,
-  alreadySeen: Set<string>
-): Promise<SpotifyTrack[]> {
-  // Spotify deprecated /recommendations in 2024. Fallback: derive top genres from
-  // top artists, then search Spotify for popular tracks tagged in those genres.
-  const artists = await spotifyFetch<{ items: SpotifyArtist[] }>(
-    "/me/top/artists?time_range=long_term&limit=50"
-  );
-  const genreCount = new Map<string, number>();
-  for (const a of artists.items ?? []) {
-    for (const g of a.genres ?? []) genreCount.set(g, (genreCount.get(g) ?? 0) + 1);
-  }
-  const topGenres = [...genreCount.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([g]) => g);
+/** Rank the user's own playlists' tracks by cross-playlist appearance count.
+ *
+ *  A track that appears in 7 of your playlists has been "voted for" 7 times
+ *  by you — much stronger curation signal than appearing in just one. Returns
+ *  tracks sorted by descending appearance count. Ties (e.g. all the songs
+ *  that appear in exactly 2 playlists) are ordered by Spotify's playlist
+ *  insertion order — stable, not random.
+ *
+ *  Excludes:
+ *    - playlists owned by Spotify (Daily Mix, Discover Weekly, Release Radar,
+ *      anything auto-generated) — filter via owner.id !== user.id
+ *    - the implicit "Liked Songs" library (which doesn't appear in /me/playlists
+ *      anyway, but defensively filtered by name)
+ *
+ *  Scans up to 50 of the user's owned playlists (one /me/playlists page).
+ *  Per playlist, pulls up to 1000 tracks. Errors on individual playlists are
+ *  swallowed so one bad playlist doesn't break the signal.
+ */
+async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
+  const me = await spotifyFetch<{ id: string }>("/me");
+  const list = await spotifyFetch<{
+    items: Array<{ id: string; owner: { id: string }; name: string }>;
+  }>("/me/playlists?limit=50");
 
-  const out: SpotifyTrack[] = [];
-  for (const genre of topGenres) {
-    if (out.length >= needed) break;
-    const q = encodeURIComponent(`genre:"${genre}"`);
-    const search = await spotifyFetch<{ tracks: { items: SpotifyTrack[] } }>(
-      `/search?q=${q}&type=track&limit=${Math.min(50, needed - out.length + 10)}`
-    );
-    for (const t of search.tracks.items ?? []) {
-      if (!alreadySeen.has(t.id)) out.push(t);
+  const own = (list.items ?? [])
+    .filter((p) => p.owner.id === me.id)
+    .filter((p) => !/^Liked Songs$/i.test(p.name));
+
+  // Map track ID → { track, count }. Use ID as the primary key (cheap),
+  // and use trackKey separately to merge cross-release duplicates so
+  // "Pink Pony Club" (single) + "Pink Pony Club" (album) count together.
+  type Entry = { track: SpotifyTrack; count: number; firstSeenOrder: number };
+  const byKey = new Map<string, Entry>();
+  let order = 0;
+
+  const fields =
+    "items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images)))";
+
+  for (const pl of own) {
+    try {
+      const trk = await spotifyFetch<{
+        items: Array<{ track: SpotifyTrack | null }>;
+      }>(`/playlists/${pl.id}/tracks?limit=100&fields=${encodeURIComponent(fields)}`);
+      // De-dup within a single playlist before counting — a song listed
+      // twice in the same playlist is one "vote," not two.
+      const seenInPl = new Set<string>();
+      for (const item of trk.items ?? []) {
+        const t = item.track;
+        if (!t || !t.id) continue;
+        const key = trackKey(t);
+        if (seenInPl.has(key)) continue;
+        seenInPl.add(key);
+        const existing = byKey.get(key);
+        if (existing) {
+          existing.count += 1;
+        } else {
+          byKey.set(key, { track: t, count: 1, firstSeenOrder: order++ });
+        }
+      }
+    } catch {
+      // One playlist failure shouldn't poison the signal.
     }
   }
-  return out;
+
+  return [...byKey.values()]
+    .sort((a, b) => b.count - a.count || a.firstSeenOrder - b.firstSeenOrder)
+    .map((e) => e.track);
 }
 
 /** Free-text track search for the "add a song" UI. Returns top 10 hits. */
@@ -312,34 +406,3 @@ export async function playlistTracks(playlistId: string): Promise<SpotifyTrack[]
   return out;
 }
 
-/** Fetch tracks from the user's own playlists. Filters out Spotify-made
- *  playlists (Daily Mix etc.) by checking owner.id === current user. Caps
- *  at 8 playlists × 100 tracks to keep API budget bounded. */
-async function fetchOwnPlaylistTracks(): Promise<SpotifyTrack[]> {
-  const me = await spotifyFetch<{ id: string }>("/me");
-  const list = await spotifyFetch<{
-    items: Array<{ id: string; owner: { id: string }; name: string }>;
-  }>("/me/playlists?limit=50");
-
-  const own = (list.items ?? [])
-    .filter((p) => p.owner.id === me.id)
-    .filter((p) => !/^Liked Songs$/i.test(p.name))
-    .slice(0, 8);
-
-  const fields =
-    "items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images)))";
-  const out: SpotifyTrack[] = [];
-  for (const pl of own) {
-    try {
-      const trk = await spotifyFetch<{
-        items: Array<{ track: SpotifyTrack | null }>;
-      }>(`/playlists/${pl.id}/tracks?limit=100&fields=${encodeURIComponent(fields)}`);
-      for (const item of trk.items ?? []) {
-        if (item.track && item.track.id) out.push(item.track);
-      }
-    } catch {
-      // Single playlist failures shouldn't kill the whole layer.
-    }
-  }
-  return out;
-}
