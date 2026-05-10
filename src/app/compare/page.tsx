@@ -22,7 +22,6 @@ export default function ComparePage() {
   const [missingPool, setMissingPool] = useState(false);
 
   useEffect(() => {
-    // Resume an in-flight run if there is one — otherwise initialize from the kept pool.
     const existing = loadCompareState();
     if (existing) {
       setState(existing);
@@ -38,7 +37,6 @@ export default function ComparePage() {
     setState(fresh);
   }, []);
 
-  // Finalize when done.
   useEffect(() => {
     if (state && isDone(state)) {
       saveRanked(state.ranked);
@@ -73,8 +71,6 @@ export default function ComparePage() {
   function pick(winner: "a" | "b") {
     setState((prev) => {
       if (!prev) return prev;
-      // Clone so React sees a new reference. The engine mutates in place
-      // but persistence + state-setter expect immutability at the boundary.
       const cloned: CompareState = JSON.parse(JSON.stringify(prev));
       const next = vote(cloned, winner);
       saveCompareState(next);
@@ -86,43 +82,48 @@ export default function ComparePage() {
   const pct = total > 0 ? Math.min(100, Math.round((state.votes / total) * 100)) : 0;
 
   return (
-    <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex flex-col">
-      <header className="border-b border-zinc-800">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="text-sm text-zinc-400">
-            <span className="text-zinc-200 font-semibold">{state.votes}</span>
-            <span className="text-zinc-500"> / ~{state.votes + state.estRemaining} votes</span>
+    <main
+      className="bg-zinc-950 text-zinc-50 flex flex-col overflow-hidden"
+      // 100dvh adapts to mobile browser chrome; 100svh would lock to smallest.
+      // dvh is right here — we want to use the visible viewport at any moment.
+      style={{ height: "100dvh" }}
+    >
+      <header className="flex-none border-b border-zinc-800">
+        <div className="max-w-3xl mx-auto px-4 pt-2 pb-1.5 flex items-center justify-between text-xs">
+          <div className="text-zinc-400">
+            <span className="text-zinc-100 font-semibold">{state.votes}</span>
+            <span className="text-zinc-500"> / ~{state.votes + state.estRemaining}</span>
           </div>
-          <div className="text-xs text-zinc-500">
-            top 25 ranked: <span className="text-zinc-300 font-semibold">{state.ranked.length}</span>/25
+          <div className="text-zinc-500">
+            top 25 · <span className="text-zinc-300 font-semibold">{state.ranked.length}</span>/25
           </div>
         </div>
-        <div className="h-0.5 bg-zinc-900">
+        <div className="h-1 bg-zinc-900">
           <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
         </div>
       </header>
 
-      <div className="flex-1 max-w-3xl w-full mx-auto px-4 py-6 flex flex-col">
-        <p className="text-center text-zinc-400 text-sm mb-4">Which one wins?</p>
+      <p className="flex-none text-center text-zinc-400 text-xs pt-2 pb-1 uppercase tracking-wide">
+        which one wins?
+      </p>
 
-        <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Choice track={matchup.a} onPick={() => pick("a")} />
-          <Choice track={matchup.b} onPick={() => pick("b")} />
-        </div>
+      <div className="flex-1 min-h-0 max-w-3xl w-full mx-auto px-3 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+        <Choice track={matchup.a} onPick={() => pick("a")} />
+        <Choice track={matchup.b} onPick={() => pick("b")} />
+      </div>
 
-        <div className="text-center mt-4">
-          <button
-            className="text-xs text-zinc-500 hover:text-zinc-300 underline"
-            onClick={() => {
-              if (confirm("Start the bracket over? Your current votes will be lost.")) {
-                clearCompareState();
-                window.location.reload();
-              }
-            }}
-          >
-            start over
-          </button>
-        </div>
+      <div className="flex-none text-center pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <button
+          className="text-[11px] text-zinc-600 hover:text-zinc-400 underline px-4 py-1"
+          onClick={() => {
+            if (confirm("Start the bracket over? Your current votes will be lost.")) {
+              clearCompareState();
+              window.location.reload();
+            }
+          }}
+        >
+          start over
+        </button>
       </div>
     </main>
   );
@@ -139,17 +140,25 @@ function Choice({
   return (
     <button
       onClick={onPick}
-      className="group relative aspect-square sm:aspect-auto sm:h-[60vh] rounded-2xl overflow-hidden border border-zinc-800 hover:border-emerald-500 active:scale-[0.98] transition"
+      // h-full + min-h-0 + the parent's grid 1fr/1fr split = each tile takes
+      // exactly half the available vertical space on mobile. No scrolling
+      // required even on a short phone (e.g. iPhone SE 568px).
+      className="group relative h-full min-h-0 rounded-2xl overflow-hidden border border-zinc-800 active:scale-[0.98] active:border-emerald-500 transition select-none"
     >
       {art ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={art} alt={track.album.name} className="absolute inset-0 w-full h-full object-cover" />
+        <img
+          src={art}
+          alt={track.album.name}
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          draggable={false}
+        />
       ) : (
         <div className="absolute inset-0 bg-zinc-800" />
       )}
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent p-4 text-left">
-        <div className="text-base font-semibold leading-tight line-clamp-2">{track.name}</div>
-        <div className="text-sm text-zinc-300 leading-tight line-clamp-1 mt-1">
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/65 to-transparent p-3 pt-12 text-left">
+        <div className="text-[15px] font-semibold leading-tight line-clamp-2">{track.name}</div>
+        <div className="text-xs text-zinc-300 leading-tight line-clamp-1 mt-0.5">
           {track.artists.map((a) => a.name).join(", ")}
         </div>
       </div>

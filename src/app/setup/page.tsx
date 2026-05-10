@@ -36,15 +36,16 @@ export default function SetupPage() {
     }
   }
 
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   return (
-    <main className="min-h-dvh bg-zinc-950 text-zinc-50 px-6 py-10 pb-24">
-      <div className="max-w-xl mx-auto space-y-8">
+    <main className="min-h-dvh bg-zinc-950 text-zinc-50 px-4 sm:px-6 py-6 sm:py-10 pb-[max(2rem,env(safe-area-inset-bottom))]">
+      <div className="max-w-xl mx-auto space-y-6 sm:space-y-8">
         <div>
-          <Link href="/" className="text-zinc-500 text-sm hover:text-zinc-300">
+          <Link href={`${basePath}/`} className="text-zinc-500 text-sm hover:text-zinc-300">
             ← back
           </Link>
-          <h1 className="text-3xl font-bold mt-2">One-time setup</h1>
-          <p className="text-zinc-400 mt-2 leading-relaxed">
+          <h1 className="text-2xl sm:text-3xl font-bold mt-2">One-time setup</h1>
+          <p className="text-zinc-400 mt-2 leading-relaxed text-sm sm:text-base">
             Spotify caps each developer app at 5 friends total. To use Bracketeering
             without that cap, you make your own free Spotify dev app — takes about 90
             seconds — and paste the Client ID below. Bracketeering runs entirely in
@@ -141,10 +142,13 @@ export default function SetupPage() {
               required
               spellCheck={false}
               autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              inputMode="text"
               placeholder="32-character hex string"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              className="w-full h-11 rounded-lg bg-zinc-950 border border-zinc-800 px-3 font-mono text-sm focus:outline-none focus:border-zinc-600"
+              className="w-full h-12 rounded-lg bg-zinc-950 border border-zinc-800 px-3 font-mono text-sm focus:outline-none focus:border-zinc-600"
             />
           </label>
           <button
@@ -172,10 +176,32 @@ function Step({ n }: { n: number }) {
 }
 
 function CopyBlock({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Older mobile browsers without clipboard API — user can long-press select.
+    }
+  }
   return (
-    <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs break-all">
-      <div className="text-zinc-500 text-[10px] uppercase tracking-wide mb-1">{label}</div>
-      {value || <span className="text-zinc-600">loading…</span>}
+    <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-zinc-500 text-[10px] uppercase tracking-wide">{label}</div>
+        <button
+          onClick={copy}
+          disabled={!value}
+          className="text-[11px] text-emerald-400 hover:text-emerald-300 disabled:opacity-40"
+        >
+          {copied ? "copied ✓" : "tap to copy"}
+        </button>
+      </div>
+      <div className="font-mono text-xs break-all select-all">
+        {value || <span className="text-zinc-600">loading…</span>}
+      </div>
     </div>
   );
 }

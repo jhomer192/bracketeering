@@ -61,34 +61,40 @@ export default function RevealPage() {
   const visible = showAll ? ranked : top10;
 
   return (
-    <main className="min-h-dvh bg-zinc-950 text-zinc-50 pb-24">
+    <main className="min-h-dvh bg-zinc-950 text-zinc-50 pb-[max(2rem,env(safe-area-inset-bottom))]">
       <header className="border-b border-zinc-800">
-        <div className="max-w-2xl mx-auto px-4 py-5">
-          <h1 className="text-3xl font-bold tracking-tight">Your top {showAll ? ranked.length : 10}</h1>
-          <p className="text-zinc-500 text-sm mt-1">Vote-decided ranking · {ranked.length} fully ranked</p>
+        <div className="max-w-2xl mx-auto px-4 py-4 sm:py-5">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
+            Your top {showAll ? ranked.length : 10}
+          </h1>
+          <p className="text-zinc-500 text-xs sm:text-sm mt-1">
+            Vote-decided ranking · {ranked.length} fully ranked
+          </p>
         </div>
       </header>
 
-      <ol className="max-w-2xl mx-auto px-4 mt-6 space-y-2">
+      <ol className="max-w-2xl mx-auto px-3 sm:px-4 mt-4 sm:mt-6 space-y-1.5">
         {visible.map((t, i) => (
           <li
             key={t.id}
-            className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-2 pr-4"
+            className="flex items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-1.5 pr-3"
           >
-            <div className="w-8 text-right font-mono text-zinc-500 text-sm">{i + 1}</div>
+            <div className="w-6 sm:w-8 text-right font-mono text-zinc-500 text-xs sm:text-sm tabular-nums">
+              {i + 1}
+            </div>
             {t.album.images?.[0]?.url ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={t.album.images[0].url}
                 alt=""
-                className="w-12 h-12 rounded-md object-cover flex-none"
+                className="w-11 h-11 sm:w-12 sm:h-12 rounded-md object-cover flex-none"
               />
             ) : (
-              <div className="w-12 h-12 rounded-md bg-zinc-800 flex-none" />
+              <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-md bg-zinc-800 flex-none" />
             )}
             <div className="min-w-0 flex-1">
-              <div className="font-medium text-sm truncate">{t.name}</div>
-              <div className="text-xs text-zinc-500 truncate">
+              <div className="font-medium text-sm leading-tight truncate">{t.name}</div>
+              <div className="text-[11px] sm:text-xs text-zinc-500 leading-tight truncate mt-0.5">
                 {t.artists.map((a) => a.name).join(", ")}
               </div>
             </div>
@@ -107,7 +113,7 @@ export default function RevealPage() {
         </div>
       )}
 
-      <section className="max-w-2xl mx-auto px-4 mt-10">
+      <section className="max-w-2xl mx-auto px-3 sm:px-4 mt-6 sm:mt-10">
         {exported ? (
           <div className="rounded-2xl border border-emerald-700/60 bg-emerald-950/40 p-5 space-y-3">
             <p className="font-semibold text-emerald-200">Saved to Spotify ✓</p>

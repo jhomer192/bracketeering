@@ -24,3 +24,12 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Mobile tap polish: kill the iOS tap-highlight halo + 300ms double-tap zoom
+   delay on interactive elements. The compare screen lives or dies by tap
+   responsiveness — this is the difference between a snappy feel and laggy. */
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}

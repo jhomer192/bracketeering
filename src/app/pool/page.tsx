@@ -3,17 +3,16 @@
 import { useEffect, useState, useCallback } from "react";
 import { buildPool, type PoolEntry, type PoolSource } from "@/lib/pool";
 import { isAuthed } from "@/lib/auth";
-import { saveKeptPool, clearCompareState } from "@/lib/storage";
+import {
+  saveKeptPool,
+  clearCompareState,
+  saveBuiltPool,
+  loadBuiltPool,
+  clearBuiltPool,
+} from "@/lib/storage";
 
 const TARGET = 128;
 
-const SOURCE_LABEL: Record<PoolSource, string> = {
-  short_term: "Recent",
-  recently_played: "Recent",
-  long_term: "All-time",
-  saved_early: "All-time",
-  genre_fill: "Genre",
-};
 const SOURCE_DOT: Record<PoolSource, string> = {
   short_term: "bg-orange-500",
   recently_played: "bg-orange-500",
@@ -28,18 +27,28 @@ export default function PoolPage() {
   const [error, setError] = useState<string | null>(null);
   const [composition, setComposition] = useState<Record<PoolSource, number> | null>(null);
 
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
   useEffect(() => {
     let cancelled = false;
-    const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-
     if (!isAuthed()) {
       window.location.replace(`${basePath}/`);
+      return;
+    }
+
+    // Use cached pool if we have one — pulling 5 endpoints from Spotify is
+    // slow and a refresh shouldn't pay that cost again.
+    const cached = loadBuiltPool();
+    if (cached) {
+      setPool(cached.pool);
+      setComposition(cached.composition);
       return;
     }
 
     buildPool()
       .then((data) => {
         if (cancelled) return;
+        saveBuiltPool(data.pool, data.composition);
         setPool(data.pool);
         setComposition(data.composition);
       })
@@ -50,7 +59,7 @@ export default function PoolPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [basePath]);
 
   const toggle = useCallback((id: string) => {
     setRemoved((prev) => {
@@ -67,10 +76,7 @@ export default function PoolPage() {
         <div className="max-w-md text-center space-y-4">
           <p className="text-red-400">Couldn&apos;t build your pool.</p>
           <p className="text-zinc-500 text-sm break-all">{error}</p>
-          <a
-            href={`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`}
-            className="text-zinc-300 underline"
-          >
+          <a href={`${basePath}/`} className="text-zinc-300 underline">
             Try again
           </a>
         </div>
@@ -94,31 +100,35 @@ export default function PoolPage() {
   const ready = kept.length === TARGET;
 
   return (
-    <main className="min-h-dvh bg-zinc-950 text-zinc-50 pb-32">
-      <header className="sticky top-0 z-10 backdrop-blur bg-zinc-950/80 border-b border-zinc-800">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold">Your 128</h1>
+    <main className="min-h-dvh bg-zinc-950 text-zinc-50 pb-28">
+      <header className="sticky top-0 z-10 backdrop-blur bg-zinc-950/85 border-b border-zinc-800">
+        <div className="max-w-3xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-base font-semibold leading-tight">Your 128</h1>
             {composition ? (
-              <p className="text-xs text-zinc-500">
+              <p className="text-[11px] text-zinc-500 leading-tight truncate">
                 {composition.short_term + composition.recently_played} recent · {composition.long_term + composition.saved_early} all-time
                 {composition.genre_fill ? ` · ${composition.genre_fill} genre` : ""}
               </p>
             ) : null}
           </div>
-          <div className="text-right">
-            <div className={`text-base font-semibold ${ready ? "text-emerald-400" : "text-zinc-300"}`}>
-              {kept.length} / {TARGET}
+          <div className="text-right flex-none">
+            <div
+              className={`text-base font-semibold leading-tight ${
+                ready ? "text-emerald-400" : kept.length > TARGET ? "text-amber-400" : "text-zinc-200"
+              }`}
+            >
+              {kept.length}/{TARGET}
             </div>
-            <div className="text-xs text-zinc-500">
-              {remaining > 0 ? `add ${remaining} more` : remaining < 0 ? `remove ${-remaining}` : "ready"}
+            <div className="text-[11px] text-zinc-500 leading-tight">
+              {remaining > 0 ? `add ${remaining}` : remaining < 0 ? `remove ${-remaining}` : "ready"}
             </div>
           </div>
         </div>
       </header>
 
-      <div className="max-w-3xl mx-auto px-3 pt-4">
-        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+      <div className="max-w-3xl mx-auto px-2 pt-2">
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-1.5">
           {pool.map((t) => {
             const isRemoved = removed.has(t.id);
             const art = t.album.images?.[0]?.url ?? "";
@@ -138,50 +148,58 @@ export default function PoolPage() {
                 ) : (
                   <div className="w-full h-full bg-zinc-800" />
                 )}
-                <span
-                  className={`absolute top-1 left-1 w-2 h-2 rounded-full ${SOURCE_DOT[t.source]}`}
-                  title={SOURCE_LABEL[t.source]}
-                />
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent p-1.5 pt-6 text-left">
+                <span className={`absolute top-1 left-1 w-2 h-2 rounded-full ${SOURCE_DOT[t.source]}`} />
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/55 to-transparent p-1 pt-5 text-left">
                   <div className="text-[10px] font-medium leading-tight line-clamp-1">{t.name}</div>
                   <div className="text-[10px] text-zinc-400 leading-tight line-clamp-1">
                     {t.artists.map((a) => a.name).join(", ")}
                   </div>
                 </div>
                 {isRemoved ? (
-                  <div className="absolute inset-0 flex items-center justify-center text-2xl">✕</div>
+                  <div className="absolute inset-0 flex items-center justify-center text-2xl bg-black/30">✕</div>
                 ) : null}
               </button>
             );
           })}
         </div>
+
+        <div className="text-center mt-6 pb-4">
+          <button
+            onClick={() => {
+              if (confirm("Refetch your pool from Spotify? Your tap-to-removes will reset.")) {
+                clearBuiltPool();
+                window.location.reload();
+              }
+            }}
+            className="text-xs text-zinc-500 hover:text-zinc-300 underline"
+          >
+            rebuild pool from Spotify
+          </button>
+        </div>
       </div>
 
-      <footer className="fixed inset-x-0 bottom-0 bg-zinc-950 border-t border-zinc-800">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
-          <div className="text-xs text-zinc-500">
-            Tap to remove. Search to add.
-            <span className="ml-3 inline-flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-orange-500" /> recent
-            </span>
-            <span className="ml-2 inline-flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-purple-500" /> all-time
-            </span>
+      <footer className="fixed inset-x-0 bottom-0 bg-zinc-950/95 backdrop-blur border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
+        <div className="max-w-3xl mx-auto px-3 py-2.5 flex items-center justify-between gap-2">
+          <div className="text-[11px] text-zinc-500 leading-tight">
+            Tap to remove
+            <div className="mt-0.5 inline-flex items-center gap-2">
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-orange-500" />recent
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-purple-500" />all-time
+              </span>
+            </div>
           </div>
           <button
             disabled={!ready}
-            className={`h-11 px-5 rounded-full font-semibold ${
-              ready
-                ? "bg-[#1DB954] hover:bg-[#1ed760] text-black"
-                : "bg-zinc-800 text-zinc-500"
+            className={`h-12 px-6 rounded-full font-semibold flex-none ${
+              ready ? "bg-[#1DB954] active:bg-[#1ed760] text-black" : "bg-zinc-800 text-zinc-500"
             }`}
             onClick={() => {
               if (!ready) return;
               saveKeptPool(kept);
-              // Stale in-flight comparison from a previous run shouldn't
-              // bleed into a fresh pool — clear it.
               clearCompareState();
-              const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
               window.location.href = `${basePath}/compare/`;
             }}
           >

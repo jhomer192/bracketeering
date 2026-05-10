@@ -27,11 +27,11 @@ export default function Home() {
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
   return (
-    <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex flex-col items-center justify-center px-6 py-12">
-      <div className="max-w-md w-full space-y-8 text-center">
+    <main className="min-h-dvh bg-zinc-950 text-zinc-50 flex flex-col items-center justify-center px-5 py-10 sm:py-12">
+      <div className="max-w-md w-full space-y-7 sm:space-y-8 text-center">
         <div className="space-y-3">
-          <h1 className="text-5xl font-bold tracking-tight">Bracketeering</h1>
-          <p className="text-zinc-400 text-lg">
+          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">Bracketeering</h1>
+          <p className="text-zinc-400 text-base sm:text-lg leading-snug">
             Vote &quot;this or that&quot; on 128 of your songs. Walk away with a real
             top 10 — and a Spotify playlist that proves it.
           </p>
