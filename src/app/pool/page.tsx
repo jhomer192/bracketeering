@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { buildPool, searchTracks, type PoolEntry, type PoolSource } from "@/lib/pool";
+import { buildPool, searchTracks, tracksByIds, type PoolEntry, type PoolSource } from "@/lib/pool";
 import { isAuthed } from "@/lib/auth";
 import type { SpotifyTrack } from "@/lib/spotify";
 import {
@@ -10,11 +10,13 @@ import {
   saveBuiltPool,
   loadBuiltPool,
   clearBuiltPool,
+  takePendingImport,
 } from "@/lib/storage";
 
 const TARGET = 128;
 
 const SOURCE_DOT: Record<PoolSource, string> = {
+  playlist: "bg-yellow-400",
   short_term: "bg-orange-500",
   recently_played: "bg-orange-500",
   medium_term: "bg-pink-400",
@@ -22,6 +24,7 @@ const SOURCE_DOT: Record<PoolSource, string> = {
   saved_early: "bg-purple-500",
   genre_fill: "bg-zinc-500",
   manual: "bg-emerald-400",
+  shared: "bg-sky-400",
 };
 
 export default function PoolPage() {
@@ -35,9 +38,55 @@ export default function PoolPage() {
 
   useEffect(() => {
     let cancelled = false;
+
+    // Detect ?p=ID,ID,... — a shared pool import. If present we replace any
+    // cached pool with the shared one so the recipient ranks the sender's
+    // 128 instead of their own. Stash + redirect if not yet authed.
+    const url = new URL(window.location.href);
+    const pParam = url.searchParams.get("p");
+
     if (!isAuthed()) {
+      if (pParam) {
+        // Persist the import token so it survives the OAuth round-trip.
+        localStorage.setItem("bracketeering.pending_import", pParam);
+      }
       window.location.replace(`${basePath}/`);
       return;
+    }
+
+    const pendingFromQuery = pParam;
+    const pending = pendingFromQuery ?? takePendingImport();
+
+    if (pending) {
+      // Strip the param from the URL so a refresh doesn't re-trigger import.
+      url.searchParams.delete("p");
+      window.history.replaceState({}, "", url.toString());
+
+      const ids = pending.split(",").map((s) => s.trim()).filter(Boolean);
+      if (ids.length === 0) {
+        setError("Shared pool link was empty.");
+        return;
+      }
+      tracksByIds(ids)
+        .then((tracks) => {
+          if (cancelled) return;
+          const pool: PoolEntry[] = tracks.map((t) => ({ ...t, source: "shared" as const }));
+          const composition: Record<PoolSource, number> = {
+            playlist: 0, short_term: 0, medium_term: 0, recently_played: 0,
+            long_term: 0, saved_early: 0, genre_fill: 0, manual: 0,
+            shared: pool.length,
+          };
+          saveBuiltPool(pool, composition);
+          setPool(pool);
+          setComposition(composition);
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          setError(e instanceof Error ? e.message : String(e));
+        });
+      return () => {
+        cancelled = true;
+      };
     }
 
     // Use cached pool if we have one — pulling 5 endpoints from Spotify is
@@ -132,10 +181,15 @@ export default function PoolPage() {
             <h1 className="text-base font-semibold leading-tight">Your 128</h1>
             {composition ? (
               <p className="text-[11px] text-zinc-500 leading-tight truncate">
-                {composition.short_term + composition.recently_played} recent
-                {composition.medium_term ? ` · ${composition.medium_term} 6mo` : ""}
-                {" · "}{composition.long_term + composition.saved_early} all-time
-                {composition.genre_fill ? ` · ${composition.genre_fill} genre` : ""}
+                {composition.shared ? `${composition.shared} shared` : (
+                  <>
+                    {composition.playlist ? `${composition.playlist} playlist · ` : ""}
+                    {composition.short_term + composition.recently_played} recent
+                    {composition.medium_term ? ` · ${composition.medium_term} 6mo` : ""}
+                    {" · "}{composition.long_term + composition.saved_early} all-time
+                    {composition.genre_fill ? ` · ${composition.genre_fill} genre` : ""}
+                  </>
+                )}
               </p>
             ) : null}
           </div>
@@ -190,18 +244,26 @@ export default function PoolPage() {
           })}
         </div>
 
-        <div className="text-center mt-6 pb-4">
-          <button
-            onClick={() => {
-              if (confirm("Refetch your pool from Spotify? Your tap-to-removes will reset.")) {
-                clearBuiltPool();
-                window.location.reload();
-              }
-            }}
-            className="text-xs text-zinc-500 hover:text-zinc-300 underline"
-          >
-            rebuild pool from Spotify
-          </button>
+        <div className="text-center mt-6 pb-4 space-y-2">
+          <div>
+            <ShareButton kept={kept} />
+          </div>
+          <div>
+            <button
+              onClick={() => {
+                if (confirm("Refetch your pool from Spotify? Your tap-to-removes will reset.")) {
+                  clearBuiltPool();
+                  // Strip ?p= so we don't re-trigger a shared import.
+                  const u = new URL(window.location.href);
+                  u.searchParams.delete("p");
+                  window.location.replace(u.toString());
+                }
+              }}
+              className="text-xs text-zinc-500 hover:text-zinc-300 underline"
+            >
+              rebuild pool from Spotify
+            </button>
+          </div>
         </div>
       </div>
 
@@ -240,6 +302,51 @@ export default function PoolPage() {
         />
       )}
     </main>
+  );
+}
+
+function ShareButton({ kept }: { kept: PoolEntry[] }) {
+  const [copied, setCopied] = useState(false);
+
+  async function onShare() {
+    if (kept.length === 0) return;
+    const ids = kept.map((t) => t.id).join(",");
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+    const url = `${window.location.origin}${basePath}/pool/?p=${ids}`;
+
+    // Prefer the native share sheet on phones — copy is the desktop fallback.
+    type Nav = Navigator & { share?: (data: ShareData) => Promise<void> };
+    const nav = navigator as Nav;
+    if (typeof nav.share === "function") {
+      try {
+        await nav.share({
+          title: "Bracketeering pool",
+          text: "Rank these 128 songs:",
+          url,
+        });
+        return;
+      } catch {
+        // user cancelled or share failed — fall through to clipboard
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // very old browsers — last resort, prompt the user
+      window.prompt("Copy this link:", url);
+    }
+  }
+
+  return (
+    <button
+      onClick={onShare}
+      disabled={kept.length === 0}
+      className="text-xs text-zinc-400 hover:text-zinc-200 underline disabled:opacity-40"
+    >
+      {copied ? "link copied ✓" : "share this pool →"}
+    </button>
   );
 }
 

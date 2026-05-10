@@ -13,6 +13,8 @@ export const SCOPES = [
   "user-top-read",
   "user-library-read",
   "user-read-recently-played",
+  "playlist-read-private",
+  "playlist-read-collaborative",
   "playlist-modify-private",
   "playlist-modify-public",
   "ugc-image-upload",

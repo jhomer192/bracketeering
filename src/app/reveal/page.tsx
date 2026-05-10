@@ -14,6 +14,7 @@ export default function RevealPage() {
   const [exported, setExported] = useState<ExportResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!isAuthed()) {
@@ -102,16 +103,37 @@ export default function RevealPage() {
         ))}
       </ol>
 
-      {ranked.length > 10 && (
-        <div className="max-w-2xl mx-auto px-4 mt-3">
+      <div className="max-w-2xl mx-auto px-4 mt-3 flex items-center gap-4 flex-wrap">
+        {ranked.length > 10 && (
           <button
             onClick={() => setShowAll((v) => !v)}
             className="text-sm text-zinc-400 hover:text-zinc-200 underline"
           >
             {showAll ? "show top 10 only" : `show all ${ranked.length}`}
           </button>
-        </div>
-      )}
+        )}
+        <button
+          onClick={async () => {
+            // "1. Track — Artist[, Artist]" lines, with a small header and a
+            // share line so it pastes nicely into Notes / iMessage / a tweet.
+            const list = (showAll ? ranked : ranked.slice(0, 10))
+              .map((t, i) => `${i + 1}. ${t.name} — ${t.artists.map((a) => a.name).join(", ")}`)
+              .join("\n");
+            const header = `My top ${showAll ? ranked.length : 10} (Bracketeering)`;
+            const text = `${header}\n\n${list}\n\nbracketeer yours: https://jhomer192.github.io/bracketeering/`;
+            try {
+              await navigator.clipboard.writeText(text);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1800);
+            } catch {
+              window.prompt("Copy:", text);
+            }
+          }}
+          className="text-sm text-zinc-400 hover:text-zinc-200 underline"
+        >
+          {copied ? "copied ✓" : "copy as text"}
+        </button>
+      </div>
 
       <section className="max-w-2xl mx-auto px-3 sm:px-4 mt-6 sm:mt-10">
         {exported ? (

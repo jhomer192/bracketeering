@@ -1,23 +1,27 @@
 // Build the 128-track candidate pool:
-//   Layer 1 — short_term top (last 4 weeks)
-//   Layer 2 — medium_term top (last 6 months) ← best signal for "current favorites"
-//   Layer 3 — recently_played replays (≥2 plays in last 50)
-//   Layer 4 — saved library (newest saves first — Spotify's default order)
-//   Layer 5 — long_term top (flaky for many users, kept as backstop)
-//   Layer 6 — genre fill (only if everything above is short)
-// long_term is demoted because Spotify's algorithm there can surface tracks
-// you barely played — medium_term + saved-library are stronger taste signals.
+//   Layer 1 — playlist (your own playlists' tracks) ← strongest curation signal
+//   Layer 2 — short_term top (last 4 weeks)
+//   Layer 3 — medium_term top (last 6 months)
+//   Layer 4 — recently_played replays (≥2 plays in last 50)
+//   Layer 5 — saved library (newest saves first)
+//   Layer 6 — long_term top (flaky — backstop only)
+//   Layer 7 — genre fill (only if everything above is short)
+// playlist is layer 1 because tracks the user manually compiled into their
+// own playlists are the strongest "I genuinely chose this" signal Spotify
+// exposes — far stronger than algorithmic top tracks.
 
 import { spotifyFetch, type SpotifyTrack, type SpotifyArtist } from "./spotify";
 
 export type PoolSource =
+  | "playlist"
   | "short_term"
   | "medium_term"
   | "recently_played"
   | "long_term"
   | "saved_early"
   | "genre_fill"
-  | "manual";
+  | "manual"
+  | "shared";
 
 export type PoolEntry = SpotifyTrack & {
   source: PoolSource;
@@ -41,7 +45,16 @@ export async function buildPool(): Promise<{
     }
   };
 
-  // ---------- Layer 1 — short_term top (last 4 weeks) ----------
+  // ---------- Layer 1 — user's own playlists ----------
+  // Best-effort: skip silently if scope not granted (older sessions).
+  try {
+    const playlistTracks = await fetchOwnPlaylistTracks();
+    tag(playlistTracks, "playlist");
+  } catch {
+    // 403 = old token without playlist-read-private scope; user re-auth fixes.
+  }
+
+  // ---------- Layer 2 — short_term top (last 4 weeks) ----------
   const shortTerm = await spotifyFetch<{ items: SpotifyTrack[] }>(
     "/me/top/tracks?time_range=short_term&limit=50"
   );
@@ -128,6 +141,7 @@ export async function buildPool(): Promise<{
       return acc;
     },
     {
+      playlist: 0,
       short_term: 0,
       medium_term: 0,
       recently_played: 0,
@@ -135,6 +149,7 @@ export async function buildPool(): Promise<{
       saved_early: 0,
       genre_fill: 0,
       manual: 0,
+      shared: 0,
     }
   );
 
@@ -186,4 +201,52 @@ export async function searchTracks(query: string): Promise<SpotifyTrack[]> {
     `/search?q=${enc}&type=track&limit=10`
   );
   return res.tracks.items ?? [];
+}
+
+/** Hydrate a list of Spotify track IDs into full track objects (for shared pool
+ *  imports). Spotify caps /tracks at 50 ids per call, so batch. */
+export async function tracksByIds(ids: string[]): Promise<SpotifyTrack[]> {
+  const out: SpotifyTrack[] = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const chunk = ids.slice(i, i + 50);
+    const res = await spotifyFetch<{ tracks: Array<SpotifyTrack | null> }>(
+      `/tracks?ids=${chunk.join(",")}`
+    );
+    for (const t of res.tracks ?? []) {
+      if (t && t.id) out.push(t);
+    }
+  }
+  return out;
+}
+
+/** Fetch tracks from the user's own playlists. Filters out Spotify-made
+ *  playlists (Daily Mix etc.) by checking owner.id === current user. Caps
+ *  at 8 playlists × 100 tracks to keep API budget bounded. */
+async function fetchOwnPlaylistTracks(): Promise<SpotifyTrack[]> {
+  const me = await spotifyFetch<{ id: string }>("/me");
+  const list = await spotifyFetch<{
+    items: Array<{ id: string; owner: { id: string }; name: string }>;
+  }>("/me/playlists?limit=50");
+
+  const own = (list.items ?? [])
+    .filter((p) => p.owner.id === me.id)
+    .filter((p) => !/^Liked Songs$/i.test(p.name))
+    .slice(0, 8);
+
+  const fields =
+    "items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images)))";
+  const out: SpotifyTrack[] = [];
+  for (const pl of own) {
+    try {
+      const trk = await spotifyFetch<{
+        items: Array<{ track: SpotifyTrack | null }>;
+      }>(`/playlists/${pl.id}/tracks?limit=100&fields=${encodeURIComponent(fields)}`);
+      for (const item of trk.items ?? []) {
+        if (item.track && item.track.id) out.push(item.track);
+      }
+    } catch {
+      // Single playlist failures shouldn't kill the whole layer.
+    }
+  }
+  return out;
 }

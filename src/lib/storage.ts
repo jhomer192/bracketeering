@@ -11,7 +11,18 @@ const KEYS = {
   kept: "bracketeering.kept_pool",
   compare: "bracketeering.compare_state",
   ranked: "bracketeering.ranked",
+  /** Shared-pool import queued before login. Comma-sep Spotify track IDs. */
+  pendingImport: "bracketeering.pending_import",
 } as const;
+
+export function setPendingImport(ids: string) {
+  localStorage.setItem(KEYS.pendingImport, ids);
+}
+export function takePendingImport(): string | null {
+  const v = localStorage.getItem(KEYS.pendingImport);
+  if (v) localStorage.removeItem(KEYS.pendingImport);
+  return v;
+}
 
 export function saveBuiltPool(pool: PoolEntry[], composition: Record<PoolSource, number>) {
   localStorage.setItem(KEYS.builtPool, JSON.stringify(pool));
@@ -61,4 +72,5 @@ export function clearRunState() {
   localStorage.removeItem(KEYS.kept);
   localStorage.removeItem(KEYS.compare);
   localStorage.removeItem(KEYS.ranked);
+  localStorage.removeItem(KEYS.pendingImport);
 }
