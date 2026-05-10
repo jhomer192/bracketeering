@@ -30,17 +30,48 @@ export type PoolEntry = SpotifyTrack & {
 const TARGET = 128;
 const RECENT_TARGET = 64;
 
+/** Normalize a track title for cross-release dedup. Spotify gives the same
+ *  recording multiple IDs across single/album/deluxe/regional/remaster
+ *  releases — e.g. "Pink Pony Club" appears as both the 2020 single and
+ *  the 2023 album cut. We strip:
+ *    - " - <suffix>"   (radio edits, remasters, "from <movie>", etc.)
+ *    - "(<version-marker>)"  conservative match: only suffixes containing
+ *      known version keywords get dropped, so "(feat. X)" is preserved
+ *      since those are genuinely different recordings. */
+const VERSION_PAREN_RE =
+  /\s*\((?:[^)]*\b(?:remaster(?:ed)?|live|version|edit|mono|stereo|deluxe|explicit|clean|demo|acoustic|remix|bonus|single|album|radio|extended|original|anniversary|sped\s*up|slowed|reissue|re-?recorded|taylor's\s*version)\b[^)]*)\)\s*$/i;
+
+function normalizeTitle(name: string): string {
+  let s = name.toLowerCase().trim();
+  // " - <anything>" Spotify suffix — almost always a version marker.
+  s = s.replace(/\s+-\s+.+$/, "");
+  // "(<version-marker>)" trailing parens — only if matches known keywords.
+  s = s.replace(VERSION_PAREN_RE, "");
+  return s.trim();
+}
+
+/** Stable dedup key: normalized title + primary artist (lowercased). Two
+ *  tracks with the same key are treated as the same song for pool-building. */
+export function trackKey(t: { name: string; artists: Array<{ name: string }> }): string {
+  const artist = (t.artists?.[0]?.name ?? "").toLowerCase().trim();
+  return `${normalizeTitle(t.name)}|${artist}`;
+}
+
 export async function buildPool(): Promise<{
   pool: PoolEntry[];
   composition: Record<PoolSource, number>;
 }> {
-  const seen = new Set<string>();
+  const seen = new Set<string>();      // by Spotify track ID
+  const seenKey = new Set<string>();   // by normalized name+artist (cross-release dedup)
   const out: PoolEntry[] = [];
 
   const tag = (tracks: SpotifyTrack[], source: PoolSource) => {
     for (const t of tracks) {
       if (!t || !t.id || seen.has(t.id)) continue;
+      const key = trackKey(t);
+      if (seenKey.has(key)) continue; // same song under a different ID
       seen.add(t.id);
+      seenKey.add(key);
       out.push({ ...t, source });
     }
   };

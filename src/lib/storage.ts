@@ -1,8 +1,26 @@
 // Tiny typed wrappers around localStorage for the bracket run state.
 // Everything is per-browser; no syncing, no backend.
 
-import type { PoolEntry, PoolSource } from "./pool";
+import { trackKey, type PoolEntry, type PoolSource } from "./pool";
 import type { CompareState } from "./compare";
+
+/** Heal pre-existing caches that were written before cross-release dedup
+ *  landed (e.g. "Pink Pony Club" appearing twice with different IDs).
+ *  Idempotent — applying it to an already-clean pool is a no-op. */
+function dedupePool(pool: PoolEntry[]): PoolEntry[] {
+  const seenId = new Set<string>();
+  const seenKey = new Set<string>();
+  const out: PoolEntry[] = [];
+  for (const t of pool) {
+    if (!t || !t.id || seenId.has(t.id)) continue;
+    const k = trackKey(t);
+    if (seenKey.has(k)) continue;
+    seenId.add(t.id);
+    seenKey.add(k);
+    out.push(t);
+  }
+  return out;
+}
 
 const KEYS = {
   /** Pool freshly built from Spotify — cached so revisits don't refetch. */
@@ -32,7 +50,10 @@ export function loadBuiltPool(): { pool: PoolEntry[]; composition: Record<PoolSo
   const p = localStorage.getItem(KEYS.builtPool);
   const c = localStorage.getItem(KEYS.builtComposition);
   if (!p || !c) return null;
-  return { pool: JSON.parse(p) as PoolEntry[], composition: JSON.parse(c) as Record<PoolSource, number> };
+  return {
+    pool: dedupePool(JSON.parse(p) as PoolEntry[]),
+    composition: JSON.parse(c) as Record<PoolSource, number>,
+  };
 }
 export function clearBuiltPool() {
   localStorage.removeItem(KEYS.builtPool);
@@ -44,7 +65,7 @@ export function saveKeptPool(pool: PoolEntry[]) {
 }
 export function loadKeptPool(): PoolEntry[] | null {
   const s = localStorage.getItem(KEYS.kept);
-  return s ? (JSON.parse(s) as PoolEntry[]) : null;
+  return s ? dedupePool(JSON.parse(s) as PoolEntry[]) : null;
 }
 
 export function saveCompareState(state: CompareState) {
@@ -63,7 +84,7 @@ export function saveRanked(ranked: PoolEntry[]) {
 }
 export function loadRanked(): PoolEntry[] | null {
   const s = localStorage.getItem(KEYS.ranked);
-  return s ? (JSON.parse(s) as PoolEntry[]) : null;
+  return s ? dedupePool(JSON.parse(s) as PoolEntry[]) : null;
 }
 
 export function clearRunState() {

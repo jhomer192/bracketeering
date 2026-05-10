@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { buildPool, searchTracks, tracksByIds, type PoolEntry, type PoolSource } from "@/lib/pool";
+import { buildPool, searchTracks, tracksByIds, trackKey, type PoolEntry, type PoolSource } from "@/lib/pool";
 import { isAuthed } from "@/lib/auth";
 import type { SpotifyTrack } from "@/lib/spotify";
 import {
@@ -177,7 +177,13 @@ export default function PoolPage() {
       Promise.all([friendsP, ownP])
         .then(([friends, own]) => {
           if (cancel) return;
-          const ownFiltered = own.pool.filter((t) => !friendIdSet.has(t.id));
+          // Filter out anything that overlaps with a friend's contribution —
+          // either by exact track ID, or by normalized name+artist (catches
+          // cross-release duplicates like "Pink Pony Club" single vs album).
+          const friendKeys = new Set(friends.map((t) => trackKey(t)));
+          const ownFiltered = own.pool.filter(
+            (t) => !friendIdSet.has(t.id) && !friendKeys.has(trackKey(t))
+          );
           setFriendTracks(friends);
           setPool(ownFiltered);
           setComposition(own.composition);
@@ -204,7 +210,7 @@ export default function PoolPage() {
     (track: SpotifyTrack) => {
       setPool((prev) => {
         if (!prev) return prev;
-        // Already in pool — un-remove instead of duplicating.
+        // Already in pool by exact ID — un-remove instead of duplicating.
         if (prev.some((p) => p.id === track.id)) {
           setRemoved((r) => {
             if (!r.has(track.id)) return r;
@@ -214,6 +220,11 @@ export default function PoolPage() {
           });
           return prev;
         }
+        // Already in pool as a different release of the same song (e.g.
+        // single vs album vs remaster) — skip silently to avoid two-of-
+        // the-same-song matchups in /compare.
+        const k = trackKey(track);
+        if (prev.some((p) => trackKey(p) === k)) return prev;
         const entry: PoolEntry = { ...track, source: "manual" };
         const next = [entry, ...prev];
         if (composition && mode.kind !== "group") saveBuiltPool(next, composition);

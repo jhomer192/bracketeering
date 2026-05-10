@@ -10,7 +10,7 @@
 // matchup `{ a, b }` for the user to vote on, or returns `done` once the
 // remaining queue is empty. Pure logic — no DOM, no localStorage.
 
-import type { PoolEntry } from "./pool";
+import { trackKey, type PoolEntry } from "./pool";
 
 export const FLOOR = 25; // fully rank only the top 25
 
@@ -70,6 +70,16 @@ function advance(s: CompareState): CompareState {
   // Pull the next track from the queue if we don't have one in flight.
   while (!s.placing && s.queue.length > 0) {
     const next = s.queue.pop()!;
+
+    // Defense-in-depth: skip any track that's effectively a duplicate of
+    // something already ranked (same ID OR same normalized name+artist).
+    // Pool-build dedup catches this upstream, but in-flight CompareStates
+    // saved before that fix can still contain dupes — silently dropping
+    // them prevents "Pink Pony Club vs Pink Pony Club" matchups.
+    const nextKey = trackKey(next);
+    if (s.ranked.some((r) => r.id === next.id || trackKey(r) === nextKey)) {
+      continue;
+    }
 
     if (s.ranked.length < FLOOR) {
       // Floor not yet full — binary-insert into the whole ranked list.
