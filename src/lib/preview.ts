@@ -21,8 +21,13 @@
 // second pass through a song is instant.
 
 type CacheEntry = { url: string | null; ts: number };
-const CACHE_KEY = "bracketeering.preview.v1";
-const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// v2: v1 cached `null` on any non-ok HTTP response (rate limits, 5xx gateway
+// errors, etc.) for 30 days, which permanently disabled the play button for
+// any track unlucky enough to hit a transient iTunes hiccup. v2 only caches
+// null on a 200 OK "no results" response, and even then expires after 1 day.
+const CACHE_KEY = "bracketeering.preview.v2";
+const POSITIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const NEGATIVE_TTL_MS = 24 * 60 * 60 * 1000;      // 1 day — re-check after a day
 
 function loadCache(): Record<string, CacheEntry> {
   if (typeof window === "undefined") return {};
@@ -47,7 +52,10 @@ function cacheGet(trackId: string): string | null | undefined {
   const c = loadCache();
   const e = c[trackId];
   if (!e) return undefined;
-  if (Date.now() - e.ts > CACHE_TTL_MS) return undefined;
+  // Negatives expire fast so a single iTunes bad-day doesn't permanently
+  // grey out the play button. Positives are stable, cache them longer.
+  const ttl = e.url === null ? NEGATIVE_TTL_MS : POSITIVE_TTL_MS;
+  if (Date.now() - e.ts > ttl) return undefined;
   return e.url;
 }
 
@@ -79,17 +87,21 @@ export async function resolvePreviewUrl(
     try {
       const res = await fetch(url);
       if (!res.ok) {
-        cacheSet(trackId, null);
+        // Transient HTTP failure (rate limit 403, gateway 5xx). Don't cache —
+        // retry next time. Caching null here is what greyed out everyone's
+        // play buttons in v1.
         return null;
       }
       const data = (await res.json()) as {
         results?: Array<{ previewUrl?: string }>;
       };
       const previewUrl = data.results?.[0]?.previewUrl ?? null;
+      // Only cache definitive answers: a 200 with results says iTunes
+      // searched and either has or doesn't have a preview for this track.
       cacheSet(trackId, previewUrl);
       return previewUrl;
     } catch {
-      // Transient (network blip, DNS) — don't poison the cache; retry next time.
+      // Transient (network blip, DNS, CORS) — don't poison the cache; retry next time.
       return null;
     } finally {
       inflight.delete(trackId);
