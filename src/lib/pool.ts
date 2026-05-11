@@ -32,14 +32,16 @@
 // playlist). Triggers when the user has fewer total played+saved tracks
 // than the pool target — i.e. a brand-new account.
 //
-// Album diversity cap: at most 3 tracks per album across the entire pool.
-// Spotify's /me/top/tracks ranks every song from an album played
-// end-to-end, so a single beloved album can crack the top 50 with 10+
-// tracks and dominate the bracket. Worse, the album-bloat eats slots the
-// primary signals would have filled, forcing the saves-emergency to
-// fire and bring in arbitrary "this one is liked" tracks. Capping at 3
-// preserves the album's signal (it's clearly a favorite) while leaving
-// room for breadth, AND keeps the emergency dormant.
+// Album diversity cap, gated by playlist corroboration:
+//   - If the album has ANY track in ANY of the user's own playlists, cap
+//     at 3. They've curated from it — singles + a deep cut is reasonable.
+//   - If nothing from the album appears in any playlist, cap at 1. The
+//     album only shows up because of raw listening volume (top_tracks
+//     ranks every song from an album played end-to-end), which is a
+//     binge signal, not a curation signal.
+// Net effect: a current-rotation album with no playlist presence
+// contributes ONE track to the bracket — its strongest — instead of
+// flooding it with deep cuts the user hasn't actually endorsed.
 
 import { spotifyFetch, type SpotifyTrack } from "./spotify";
 
@@ -97,12 +99,28 @@ const TODAYS_TOP_HITS_PLAYLIST_ID = "37i9dQZF1DXcBWIGoYBM5M";
 const PLAYLIST_FRACTION_THRESHOLD = 0.25;
 const MIN_PLAYLIST_APPEARANCES_FLOOR = 2;
 
-// Max tracks per album across the entire pool. 3 is enough to capture a
-// genuine album-favorite ("I love the singles AND a deep cut") without
-// letting one album occupy 10+ of 128 slots. Applies to every source —
-// long_term, medium_term, short_term, playlist, and saves — so the cap
-// can't be circumvented by an album dominating one signal.
-const ALBUM_CAP = 3;
+// Per-album admit caps. Two tiers based on playlist corroboration:
+//   - CORROBORATED: at least one track from this album appears in one of
+//     the user's own playlists. They've explicitly curated something from
+//     it — bigger cap is justified ("singles + a deep cut").
+//   - UNCORROBORATED: nothing from this album in any playlist. The album
+//     only shows up because of raw listening volume (top_tracks ranks
+//     every song from an album played end-to-end). Treat as 1-vote
+//     signal: surface the strongest track, drop the rest as binge noise.
+//
+// Concretely: a current-rotation album you've played end-to-end but
+// haven't yet added anything to a playlist from contributes ONE track to
+// the bracket, not its entire tracklist.
+const ALBUM_CAP_CORROBORATED = 3;
+const ALBUM_CAP_UNCORROBORATED = 1;
+
+// Hard ceiling on saved-library admits. Saves emergency exists for users
+// with thin top_tracks + playlist signal, but the saved library can be
+// years of impulse-saves that don't reflect current taste. Capping at 5
+// keeps the safety net (a totally empty pool still gets filled) without
+// letting a year-old "I should listen to this later" save outweigh real
+// curation.
+const SAVES_MAX_ADMITS = 5;
 
 function playlistThreshold(playlistCount: number): number {
   return Math.max(
@@ -145,16 +163,22 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   const TARGET = target;
   const seen = new Set<string>();      // by Spotify track ID
   const seenKey = new Set<string>();   // by normalized name+artist (cross-release dedup)
-  const albumCount = new Map<string, number>(); // by album ID, for ALBUM_CAP
+  const albumCount = new Map<string, number>(); // by album ID, for cap enforcement
   const out: PoolEntry[] = [];
 
-  // Admit every track in `tracks` (subject to dedup + ALBUM_CAP + TARGET
+  // Filled after the playlist scan returns. Albums not in this set are
+  // treated as uncorroborated — listening-binge artifacts — and capped
+  // harder.
+  let corroboratedAlbumIds: Set<string> = new Set();
+
+  // Admit every track in `tracks` (subject to dedup + album cap + TARGET
   // ceiling), tagged with `source`. Caller controls volume by slicing
   // `tracks` before passing. The dedup check makes this a no-op for tracks
   // already in the pool from a stronger signal. The album cap is global —
   // tracks beyond the per-album quota are silently skipped regardless of
   // signal strength.
-  const admit = (tracks: SpotifyTrack[], source: PoolSource): void => {
+  const admit = (tracks: SpotifyTrack[], source: PoolSource): number => {
+    let admitted = 0;
     for (const t of tracks) {
       if (out.length >= TARGET) break;
       if (!t || !t.id || seen.has(t.id)) continue;
@@ -162,19 +186,24 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
       if (seenKey.has(key)) continue;
       const albumId = t.album?.id;
       if (albumId) {
+        const cap = corroboratedAlbumIds.has(albumId)
+          ? ALBUM_CAP_CORROBORATED
+          : ALBUM_CAP_UNCORROBORATED;
         const count = albumCount.get(albumId) ?? 0;
-        if (count >= ALBUM_CAP) continue;
+        if (count >= cap) continue;
         albumCount.set(albumId, count + 1);
       }
       seen.add(t.id);
       seenKey.add(key);
       out.push({ ...t, source });
+      admitted += 1;
     }
+    return admitted;
   };
 
   // Pre-fetch the four signals in parallel — they're independent and each
   // costs 1-9 API calls. Doing them upfront avoids per-pass round-trips.
-  const [longTermRes, mediumTermRes, shortTermRes, playlistFreqList] = await Promise.all([
+  const [longTermRes, mediumTermRes, shortTermRes, playlistScan] = await Promise.all([
     spotifyFetch<{ items: SpotifyTrack[] }>(
       "/me/top/tracks?time_range=long_term&limit=50"
     ).catch(() => ({ items: [] as SpotifyTrack[] })),
@@ -184,13 +213,18 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     spotifyFetch<{ items: SpotifyTrack[] }>(
       "/me/top/tracks?time_range=short_term&limit=50"
     ).catch(() => ({ items: [] as SpotifyTrack[] })),
-    // playlist cross-frequency: catch errors so a 403 (missing scope)
-    // doesn't kill the whole build.
-    crossPlaylistFrequency().catch(() => [] as SpotifyTrack[]),
+    // playlist cross-frequency + album corroboration. Catch errors so a
+    // 403 (missing scope) doesn't kill the whole build.
+    crossPlaylistFrequency().catch(() => ({
+      tracks: [] as SpotifyTrack[],
+      albumIds: new Set<string>(),
+    })),
   ]);
   const longTerm = longTermRes.items ?? [];
   const mediumTerm = mediumTermRes.items ?? [];
   const shortTerm = shortTermRes.items ?? [];
+  const playlistFreqList = playlistScan.tracks;
+  corroboratedAlbumIds = playlistScan.albumIds;
 
   // Per-signal position cursor: tracks how many positions from the source
   // list each pass has already consumed. Each pass slices [cursor, quota),
@@ -221,13 +255,20 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     admit(playlistFreqList.slice(cursor.playlist), "playlist");
   }
 
-  // Emergency: liked songs. Only fires when the four primary signals
-  // didn't fill the pool — e.g. a user with few playlists and limited
-  // listening history. We pull saved library pages until the pool fills
-  // or saves are exhausted.
+  // Emergency: liked songs. Strictly capped at SAVES_MAX_ADMITS to keep
+  // years-old impulse-saves from leaking into the bracket. Reads only the
+  // most recent saves (newest-first ordering of /me/tracks) so what does
+  // get admitted is at least current. If saves can't fill the gap, we
+  // fall through to the editorial absolute-emergency below rather than
+  // paging deeper into stale library state.
   if (out.length < TARGET) {
+    let savesAdmitted = 0;
     let offset = 0;
-    while (out.length < TARGET && offset < 500) {
+    outer: while (
+      out.length < TARGET &&
+      savesAdmitted < SAVES_MAX_ADMITS &&
+      offset < 100 // 2 pages of 50, newest saves only
+    ) {
       const page = await spotifyFetch<{
         items: Array<{ track: SpotifyTrack | null }>;
         next: string | null;
@@ -236,9 +277,14 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
       const tracks = (page.items ?? [])
         .map((i) => i.track)
         .filter((t): t is SpotifyTrack => !!t && !!t.id);
-      const before = out.length;
-      admit(tracks, "saved_early");
-      if (out.length === before && !page.next) break; // nothing new this page
+      // Walk one track at a time so we can stop exactly at the cap rather
+      // than overshooting (the alternative — admit a batch and check after
+      // — could admit 5+ in a single page).
+      for (const t of tracks) {
+        if (savesAdmitted >= SAVES_MAX_ADMITS) break outer;
+        if (out.length >= TARGET) break outer;
+        savesAdmitted += admit([t], "saved_early");
+      }
       if (!page.next) break;
       offset += 50;
     }
@@ -281,16 +327,23 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   return { pool, composition };
 }
 
-/** Rank the user's own playlists' tracks by cross-playlist appearance count.
+/** Rank the user's own playlists' tracks by cross-playlist appearance count,
+ *  and return the set of album IDs that appear ANYWHERE in those playlists.
  *
  *  A track that appears in 7 of your playlists has been "voted for" 7 times
- *  by you — much stronger curation signal than appearing in just one. Returns
- *  tracks sorted by descending appearance count, filtered to those that
- *  appear in at least `playlistThreshold(playlistCount)` of them. The
- *  threshold scales with the user's playlist count (25% of total, floor 2)
- *  so the filter means the same thing for a 4-playlist user and a
- *  40-playlist user. Ties ordered by Spotify's playlist insertion order —
- *  stable, not random.
+ *  by you — much stronger curation signal than appearing in just one. The
+ *  primary return — `tracks` — is sorted by descending appearance count,
+ *  filtered to those that appear in at least `playlistThreshold(playlistCount)`
+ *  of them. The threshold scales with the user's playlist count (25% of
+ *  total, floor 2) so the filter means the same thing for a 4-playlist user
+ *  and a 40-playlist user. Ties ordered by Spotify's playlist insertion
+ *  order — stable, not random.
+ *
+ *  The secondary return — `albumIds` — is every album that has ANY track
+ *  in ANY of the user's owned playlists (no threshold). Used as a
+ *  corroboration signal for the per-album admit cap: an album the user
+ *  has curated from gets the higher cap; a pure listening-binge album
+ *  gets the lower one.
  *
  *  Excludes:
  *    - playlists owned by Spotify (Daily Mix, Discover Weekly, Release Radar,
@@ -302,7 +355,10 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
  *  Per playlist, pulls up to 300 tracks across 3 pages. Errors on individual
  *  playlists are swallowed so one bad playlist doesn't break the signal.
  */
-async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
+async function crossPlaylistFrequency(): Promise<{
+  tracks: SpotifyTrack[];
+  albumIds: Set<string>;
+}> {
   const me = await spotifyFetch<{ id: string }>("/me");
   const list = await spotifyFetch<{
     items: Array<{ id: string; owner: { id: string }; name: string }>;
@@ -317,6 +373,7 @@ async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
   // "Pink Pony Club" (single) + "Pink Pony Club" (album) count together.
   type Entry = { track: SpotifyTrack; count: number; firstSeenOrder: number };
   const byKey = new Map<string, Entry>();
+  const albumIds = new Set<string>();
   let order = 0;
 
   const fields =
@@ -346,6 +403,10 @@ async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
         for (const item of data.items ?? []) {
           const t = item.track;
           if (!t || !t.id) continue;
+          // Record album corroboration BEFORE the per-playlist dedup —
+          // the same album appearing twice in one playlist still proves
+          // the user has curated from it.
+          if (t.album?.id) albumIds.add(t.album.id);
           const key = trackKey(t);
           if (seenInPl.has(key)) continue;
           seenInPl.add(key);
@@ -365,10 +426,11 @@ async function crossPlaylistFrequency(): Promise<SpotifyTrack[]> {
   }
 
   const threshold = playlistThreshold(own.length);
-  return [...byKey.values()]
+  const tracks = [...byKey.values()]
     .filter((e) => e.count >= threshold)
     .sort((a, b) => b.count - a.count || a.firstSeenOrder - b.firstSeenOrder)
     .map((e) => e.track);
+  return { tracks, albumIds };
 }
 
 /** Free-text track search for the "add a song" UI. Returns top 10 hits. */
