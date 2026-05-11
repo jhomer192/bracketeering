@@ -28,12 +28,23 @@ and Bracketeering uses it. No shared cap.
 - Playlist export — creates "My Top 10" + "My Top 25" playlists in your
   Spotify, each with composed-mosaic cover art (2×2 / 3×3, JPEG ≤256KB,
   drawn in-browser via `<canvas>`)
+- Search-to-add on sub-in screen — both single-track search and full
+  playlist import (paginated, dedupes by name+artist)
+- Per-tier shareable image cards — 1080×1920 PNG of any tier (Top 10/25/
+  50/100/128) as a numbered list or dense mosaic
+- **Single-image bracket export** — 1080×1920 PNG of the top 16 (or top 8
+  for shallower pools) drawn as a tournament tree, with seeded matchups,
+  connector lines, and a champion badge
+- **Predict-my-top-10** — share a `/predict/?t=…` link with a friend; they
+  see your top 10 in shuffled order, drag to guess, get a score (0–100%
+  blend of pair-order correctness and exact-rank hits). No Spotify auth
+  required on the recipient side; metadata loads via Spotify oEmbed.
+- Group brackets — 2-4 friends each contribute a slice of the pool; last
+  person ranks the merged result
 
 ## Not built yet
 
-- Search-to-add on sub-in screen
-- Bracket export image (single shareable PNG)
-- Predict-my-top-10 share link
+(Nothing on the public roadmap — file an issue if you want something.)
 
 ## Local dev
 
@@ -66,6 +77,7 @@ app can register multiple redirect URIs — add both.
 | `/pool` | Sub-in screen — review the 128, drop what you don't want |
 | `/compare` | This-or-that voting (~370 taps for a full pool) |
 | `/reveal` | Top 10 ranking + Save to Spotify |
+| `/predict` | Public — friend guesses your top 10, gets a score (no auth) |
 
 ## Deploy
 

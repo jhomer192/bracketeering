@@ -34,6 +34,8 @@ import { exportPlaylists, type ExportResult } from "@/lib/export";
 import { isAuthed, hasExportScopes, startLogin, logout } from "@/lib/auth";
 import { getQuips } from "@/lib/quips";
 import { renderTierCard, shareOrDownloadCard } from "@/lib/cardExport";
+import { renderBracket, type BracketSize } from "@/lib/bracketExport";
+import { buildPredictUrl } from "@/lib/predict";
 
 // Tier breakpoints. Voted: top 25 (compare engine's FLOOR). Beyond that,
 // tracks are ordered by their pool position (best Spotify signal first).
@@ -138,6 +140,12 @@ export default function RevealPage() {
   // we can give appropriate inline confirmation feedback.
   const [cardBusy, setCardBusy] = useState(false);
   const [cardStatus, setCardStatus] = useState<null | "shared" | "downloaded">(null);
+  // Bracket export — independent state from the tier card so both can show
+  // their own status without stepping on each other.
+  const [bracketBusy, setBracketBusy] = useState(false);
+  const [bracketStatus, setBracketStatus] = useState<null | "shared" | "downloaded">(null);
+  // Predict-my-top-10 share button — single transient "copied" pulse.
+  const [predictCopied, setPredictCopied] = useState(false);
   // Reorder mode: when on, the list is drag-sortable. The curated order
   // persists to localStorage and overrides the default vote+tail stitch
   // on subsequent loads. Drag-and-drop only — read-only mode just renders
@@ -376,6 +384,74 @@ export default function RevealPage() {
     });
   }
 
+  async function shareBracket() {
+    if (bracketBusy) return;
+    // Bracket needs at least 8 ranked tracks (smallest supported size).
+    if (full128.length < 8) {
+      setErr("Need at least 8 ranked tracks to render a bracket.");
+      return;
+    }
+    setBracketBusy(true);
+    setBracketStatus(null);
+    setErr(null);
+    try {
+      // 16-bracket when we have enough; otherwise fall back to 8.
+      const size: BracketSize = full128.length >= 16 ? 16 : 8;
+      const blob = await renderBracket({
+        tracks: full128,
+        size,
+        shareHost: `${window.location.host}${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}`.replace(
+          /\/$/,
+          "",
+        ),
+      });
+      const result = await shareOrDownloadCard(
+        blob,
+        `bracketeering-bracket-top${size}.png`,
+        `My Top ${size} bracket (Bracketeering)`,
+      );
+      setBracketStatus(result);
+      setTimeout(() => setBracketStatus(null), 2400);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "bracket export failed");
+    } finally {
+      setBracketBusy(false);
+    }
+  }
+
+  async function sharePredict() {
+    // Top 10 is the canonical predict size; smaller pools still get a
+    // playable challenge as long as there are ≥4 tracks.
+    const topIds = full128.slice(0, 10).map((t) => t.id);
+    if (topIds.length < 4) {
+      setErr("Need at least 4 ranked tracks to share a predict challenge.");
+      return;
+    }
+    const url = buildPredictUrl({
+      origin: window.location.origin,
+      basePath: process.env.NEXT_PUBLIC_BASE_PATH ?? "",
+      topTenIds: topIds,
+    });
+    const text = `Think you know my taste? Predict my top ${topIds.length}:`;
+    type Nav = Navigator & { share?: (data: ShareData) => Promise<void> };
+    const nav = navigator as Nav;
+    if (typeof nav.share === "function") {
+      try {
+        await nav.share({ title: "Bracketeering", text, url });
+        return;
+      } catch {
+        // user cancelled or share sheet errored — fall through to copy
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setPredictCopied(true);
+      setTimeout(() => setPredictCopied(false), 1800);
+    } catch {
+      window.prompt("Copy this link:", url);
+    }
+  }
+
   async function shareCard() {
     if (cardBusy) return;
     setCardBusy(true);
@@ -575,7 +651,33 @@ export default function RevealPage() {
         </SortableContext>
       </DndContext>
 
-      <div className="max-w-2xl mx-auto px-4 mt-3 flex items-center gap-4 flex-wrap">
+      <div className="max-w-2xl mx-auto px-4 mt-3 flex items-center gap-x-4 gap-y-2 flex-wrap">
+        {/* Bracket-style PNG — single tournament tree of the top 16 (or top
+            8 for shallower pools). Distinct from the per-tier card because
+            it emphasises the elimination format the app is named for. */}
+        <button
+          onClick={shareBracket}
+          disabled={bracketBusy || full128.length < 8}
+          className="text-sm text-emerald-400 hover:text-emerald-300 disabled:text-zinc-600 disabled:no-underline underline"
+        >
+          {bracketBusy
+            ? "rendering bracket…"
+            : bracketStatus === "shared"
+              ? "bracket shared ✓"
+              : bracketStatus === "downloaded"
+                ? "bracket downloaded ✓"
+                : "share my bracket"}
+        </button>
+        {/* Predict-my-top-10 — copies a public link a friend can use to
+            guess the user's ranking. No Spotify auth needed on the
+            recipient side; metadata loads via Spotify oEmbed. */}
+        <button
+          onClick={sharePredict}
+          disabled={full128.length < 4}
+          className="text-sm text-fuchsia-400 hover:text-fuchsia-300 disabled:text-zinc-600 disabled:no-underline underline"
+        >
+          {predictCopied ? "predict link copied ✓" : "challenge a friend →"}
+        </button>
         {/* Image-card export — generates a 1080×1920 PNG of the current tier.
             Web Share API on mobile lets users send straight to Stories /
             iMessage; desktop falls through to a download. */}
