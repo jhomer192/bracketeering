@@ -18,19 +18,24 @@ import {
 } from "@/lib/storage";
 import { trackKey, type PoolEntry } from "@/lib/pool";
 import type { SpotifyTrack } from "@/lib/spotify";
-import { getPreviewPlayer, trackUri } from "@/lib/spotifyPlayer";
+import { getPreviewPlayer, resolvePreviewUrl } from "@/lib/preview";
 
 export default function ComparePage() {
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const [state, setState] = useState<CompareState | null>(null);
   const [missingPool, setMissingPool] = useState(false);
-  // Active track ID being played by the Spotify embed iframe (or null if
-  // nothing is playing). Drives the play/pause icon state on each card.
+  // Active track ID in the audio player (loading or playing).
   const [playingId, setPlayingId] = useState<string | null>(null);
-  // Host element for the Spotify embed iframe — created once, mounted at
-  // the bottom of the page so the player UI stays visible (per Spotify's
-  // embed terms) without disrupting the card layout.
-  const playerHostRef = useRef<HTMLDivElement | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+  // Resolved iTunes preview URLs for the current A/B matchup. Pre-fetched
+  // on matchup change so the click handler can call audio.play() inside
+  // the gesture (iOS Safari rejects play() after an await on the gesture).
+  const [previewA, setPreviewA] = useState<string | null>(null);
+  const [previewB, setPreviewB] = useState<string | null>(null);
+  // Track-not-on-iTunes set: separate from `preview*` so we can distinguish
+  // "still resolving" (null + not in this set) from "no preview available"
+  // (null + in this set). Avoids a spinner that never ends.
+  const [resolvedSet, setResolvedSet] = useState<Set<string>>(() => new Set());
   // Misclick recovery — snapshot the pre-vote state so the user can step
   // back. Capped at HISTORY_CAP entries; ephemeral (not persisted) since
   // misclicks are noticed within a couple votes max.
@@ -84,45 +89,65 @@ export default function ComparePage() {
 
   const matchup = useMemo(() => (state ? currentMatchup(state) : null), [state]);
 
-  // Initialize the Spotify embed player once. Singleton across remounts.
+  // Subscribe to the audio player state so the play/pause icons reflect
+  // reality (e.g. when the audio naturally ends at 30 sec).
   useEffect(() => {
-    const host = playerHostRef.current;
-    if (!host) return;
     const player = getPreviewPlayer();
-    let mounted = true;
-    player.init(host).catch(() => {
-      // iframe-api script blocked (extensions, network) — graceful fallback
-      // is "no preview"; cards still work as pick targets.
-    });
     const unsub = player.subscribe((s) => {
-      if (!mounted) return;
-      // Reflect the iframe's own state into React so card icons stay
-      // in sync if the user hits play/pause directly on the embed.
-      setPlayingId(s.playing ? extractTrackId(s.uri) : null);
+      setPlayingId(s.playing || s.loading ? s.trackId : null);
+      setAudioLoading(s.loading);
     });
-    return () => {
-      mounted = false;
-      unsub();
-    };
+    return unsub;
   }, []);
 
+  // Pre-resolve preview URLs for the current matchup. This MUST complete
+  // before the user clicks play — otherwise the click handler can't call
+  // audio.play() synchronously with the resolved URL, and iOS Safari drops
+  // the gesture activation. iTunes responds in <500ms on a warm cache, and
+  // subsequent songs almost always hit the localStorage cache.
+  useEffect(() => {
+    if (!matchup) return;
+    setPreviewA(null);
+    setPreviewB(null);
+    let cancelled = false;
+    const markResolved = (id: string) => {
+      setResolvedSet((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+    };
+    resolvePreviewUrl(matchup.a.id, matchup.a.name, matchup.a.artists[0]?.name ?? "").then((u) => {
+      if (cancelled) return;
+      setPreviewA(u);
+      markResolved(matchup.a.id);
+    });
+    resolvePreviewUrl(matchup.b.id, matchup.b.name, matchup.b.artists[0]?.name ?? "").then((u) => {
+      if (cancelled) return;
+      setPreviewB(u);
+      markResolved(matchup.b.id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [matchup]);
+
   const stopAudio = useCallback(() => {
-    getPreviewPlayer().pause();
-    setPlayingId(null);
+    getPreviewPlayer().stop();
   }, []);
 
   const togglePreview = useCallback(
-    (track: SpotifyTrack) => {
+    (track: SpotifyTrack, previewUrl: string | null) => {
       const player = getPreviewPlayer();
       if (playingId === track.id) {
         player.pause();
-        setPlayingId(null);
         return;
       }
-      // Optimistically reflect the requested track — the iframe state
-      // listener will correct this once playback actually starts.
-      setPlayingId(track.id);
-      player.play(trackUri(track.id)).catch(() => setPlayingId(null));
+      if (!previewUrl) return; // no iTunes match — button is disabled in UI
+      // SYNCHRONOUS play() — preserves the user-gesture activation that
+      // iOS Safari (and tightened desktop autoplay policies) require.
+      player.play(track.id, previewUrl);
     },
     [playingId],
   );
@@ -178,8 +203,7 @@ export default function ComparePage() {
         if (playingId) {
           stopAudio();
         } else {
-          // Embed API works for every track — no preview_url gate needed.
-          togglePreview(matchup.a);
+          togglePreview(matchup.a, previewA);
         }
       } else if (
         // Undo: Backspace, U, or Cmd/Ctrl+Z. Power-user shortcuts paired
@@ -196,12 +220,12 @@ export default function ComparePage() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [matchup, pick, playingId, stopAudio, togglePreview, undo]);
+  }, [matchup, pick, playingId, previewA, stopAudio, togglePreview, undo]);
 
   // Stop preview audio when the page unmounts.
   useEffect(() => {
     return () => {
-      getPreviewPlayer().pause();
+      getPreviewPlayer().stop();
     };
   }, []);
 
@@ -266,35 +290,22 @@ export default function ComparePage() {
             label="A"
             track={matchup.a}
             onPick={() => pick("a")}
-            playing={playingId === matchup.a.id}
-            onTogglePreview={() => togglePreview(matchup.a)}
+            playing={playingId === matchup.a.id && !audioLoading}
+            loading={playingId === matchup.a.id && audioLoading}
+            disabled={resolvedSet.has(matchup.a.id) && previewA === null}
+            onTogglePreview={() => togglePreview(matchup.a, previewA)}
           />
           <Divider />
           <Choice
             label="B"
             track={matchup.b}
             onPick={() => pick("b")}
-            playing={playingId === matchup.b.id}
-            onTogglePreview={() => togglePreview(matchup.b)}
+            playing={playingId === matchup.b.id && !audioLoading}
+            loading={playingId === matchup.b.id && audioLoading}
+            disabled={resolvedSet.has(matchup.b.id) && previewB === null}
+            onTogglePreview={() => togglePreview(matchup.b, previewB)}
           />
         </div>
-      </div>
-
-      {/* Spotify embed mini-player. The iframe API loads its UI inside the
-          inner host div. CRITICAL: the iframe must have real, non-zero
-          dimensions and be considered "visible" by the browser at the time
-          the user taps a track, or iOS Safari (and some Android browsers)
-          will reject the autoplay() call against a cross-origin iframe.
-          So we ALWAYS render the iframe at full size — we just translate
-          the wrapper off-screen when nothing is playing, instead of
-          collapsing height/opacity. Layout-visible, viewport-hidden. */}
-      <div
-        className={`flex-none w-full max-w-5xl mx-auto px-3 sm:px-4 mb-1 transition-transform duration-200 ${
-          playingId ? "translate-y-0" : "translate-y-[200%] pointer-events-none"
-        }`}
-        aria-hidden={!playingId}
-      >
-        <div ref={playerHostRef} className="h-20" />
       </div>
 
       {/* Footer — keyboard hint on desktop, undo + start-over on all sizes. */}
@@ -339,6 +350,8 @@ function Choice({
   track,
   onPick,
   playing,
+  loading,
+  disabled,
   onTogglePreview,
 }: {
   label: "A" | "B";
@@ -351,6 +364,8 @@ function Choice({
   };
   onPick: () => void;
   playing: boolean;
+  loading: boolean;
+  disabled: boolean;
   onTogglePreview: () => void;
 }) {
   const art = track.album.images?.[0]?.url ?? "";
@@ -380,31 +395,44 @@ function Choice({
           {label}
         </span>
 
-        {/* Preview play button, top-right. Always rendered — the Spotify
-            Embed Iframe API plays every track regardless of the now-flaky
-            `preview_url` field. */}
+        {/* Preview play button, top-right. Disabled (with a muted icon) when
+            iTunes has no match for the track — better than a button that
+            does nothing on click. */}
         <span
           role="button"
-          aria-label={playing ? "Pause preview" : "Play preview"}
-          tabIndex={0}
+          aria-label={
+            disabled
+              ? "Preview unavailable"
+              : playing
+                ? "Pause preview"
+                : loading
+                  ? "Loading preview"
+                  : "Play preview"
+          }
+          aria-disabled={disabled}
+          tabIndex={disabled ? -1 : 0}
           onClick={(e) => {
             e.stopPropagation();
+            if (disabled) return;
             onTogglePreview();
           }}
           onKeyDown={(e) => {
+            if (disabled) return;
             if (e.key === "Enter" || e.key === " ") {
               e.stopPropagation();
               e.preventDefault();
               onTogglePreview();
             }
           }}
-          className={`absolute top-2 right-2 sm:top-3 sm:right-3 inline-flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-full backdrop-blur-sm transition cursor-pointer ${
-            playing
-              ? "bg-emerald-500 text-black"
-              : "bg-black/55 text-white hover:bg-black/70"
+          className={`absolute top-2 right-2 sm:top-3 sm:right-3 inline-flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-full backdrop-blur-sm transition ${
+            disabled
+              ? "bg-black/40 text-white/30 cursor-not-allowed"
+              : playing
+                ? "bg-emerald-500 text-black cursor-pointer"
+                : "bg-black/55 text-white hover:bg-black/70 cursor-pointer"
           }`}
         >
-          {playing ? <PauseIcon /> : <PlayIcon />}
+          {disabled ? <PlayIcon /> : playing ? <PauseIcon /> : loading ? <Spinner /> : <PlayIcon />}
         </span>
       </button>
 
@@ -439,13 +467,6 @@ function Kbd({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Pull the bare track ID out of a Spotify URI like "spotify:track:abc". */
-function extractTrackId(uri: string | null): string | null {
-  if (!uri) return null;
-  const m = uri.match(/^spotify:track:([A-Za-z0-9]+)$/);
-  return m ? m[1] : null;
-}
-
 function UndoIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -468,6 +489,14 @@ function PauseIcon() {
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
       <rect x="3.5" y="2.5" width="3" height="11" rx="0.5" />
       <rect x="9.5" y="2.5" width="3" height="11" rx="0.5" />
+    </svg>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden className="animate-spin">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
     </svg>
   );
 }
