@@ -45,6 +45,7 @@ const SOURCE_DOT: Record<PoolSource, string> = {
   recently_played: "bg-orange-500",
   medium_term: "bg-pink-400",
   long_term: "bg-purple-500",
+  recap: "bg-indigo-400",
   saved_early: "bg-purple-500",
   genre_fill: "bg-zinc-500",
   manual: "bg-emerald-400",
@@ -497,6 +498,7 @@ export default function PoolPage() {
                     {composition.short_term + composition.recently_played} recent
                     {composition.medium_term ? ` · ${composition.medium_term} 6mo` : ""}
                     {" · "}{composition.long_term + composition.saved_early} all-time
+                    {composition.recap ? ` · ${composition.recap} recap` : ""}
                     {composition.genre_fill ? ` · ${composition.genre_fill} genre` : ""}
                   </>
                 )}
@@ -732,6 +734,7 @@ function blankComposition(): Record<PoolSource, number> {
     medium_term: 0,
     recently_played: 0,
     long_term: 0,
+    recap: 0,
     saved_early: 0,
     genre_fill: 0,
     manual: 0,

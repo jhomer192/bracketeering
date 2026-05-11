@@ -1,9 +1,16 @@
 // Build the 128-track candidate pool via a pass-based algorithm.
 //
-// Each pass takes a balanced slice from four signals:
+// Each pass takes a balanced slice from five signals:
 //   - long_term top tracks      ← Spotify's all-time favorites
 //   - medium_term top tracks    ← last 6 months
 //   - short_term top tracks     ← last 4 weeks; capped at 5 forever
+//   - recap                     ← Spotify-generated personalized playlists:
+//                                  "Your Top Songs YYYY" (Wrapped), "On
+//                                  Repeat," "Repeat Rewind." Each is 30-100
+//                                  tracks of Spotify's official record of
+//                                  what you've actually played. Effectively
+//                                  expands top_tracks beyond the 50-track
+//                                  API cap, and adds historical year data.
 //   - playlist cross-frequency  ← songs in ≥25% of the user's own playlists
 //                                  (auto-gen excluded), with a floor of 2.
 //                                  Adding a song to a single playlist is
@@ -12,12 +19,12 @@
 //                                  user with 4 playlists needs the song in
 //                                  2+, a user with 40 needs it in 10+.
 //
-// Pass 1: 20 / 20 / 5 / 20    = up to 65 admits
-// Pass 2: 40 / 40 / 5 / 40    = up to 125 cumulative
-// Pass 3: 50 / 50 / 5 / 80    = up to 185 cumulative (Spotify maxes top
-//                               tracks at 50 per window, so 50 is the
-//                               ceiling on long/medium; playlist keeps
-//                               expanding by appearance count)
+// Pass 1: 20 / 20 / 5 / 20 / 20    = up to 85 admits
+// Pass 2: 40 / 40 / 5 / 50 / 40    = up to 175 cumulative
+// Pass 3: 50 / 50 / 5 / 100 / 80   = up to 285 cumulative (Spotify maxes
+//                                    top tracks at 50 per window, so 50 is
+//                                    the ceiling on long/medium; recap and
+//                                    playlist keep expanding)
 // Pass 4: drain remaining playlist cross-frequency entries
 //
 // short_term stops growing after pass 1 because the 4-week window is
@@ -52,6 +59,7 @@ export type PoolSource =
   | "medium_term"
   | "recently_played"
   | "long_term"
+  | "recap"
   | "saved_early"
   | "genre_fill"
   | "manual"
@@ -67,9 +75,9 @@ const DEFAULT_TARGET = 128;
 // at 5 across all passes (the top-5-only rule); long/medium are capped at
 // Spotify's 50 max; playlist cross-frequency keeps growing until exhausted.
 const PASS_QUOTAS = [
-  { long: 20, medium: 20, short: 5, playlist: 20 },
-  { long: 40, medium: 40, short: 5, playlist: 40 },
-  { long: 50, medium: 50, short: 5, playlist: 80 },
+  { long: 20, medium: 20, short: 5, recap: 20, playlist: 20 },
+  { long: 40, medium: 40, short: 5, recap: 50, playlist: 40 },
+  { long: 50, medium: 50, short: 5, recap: 100, playlist: 80 },
 ] as const;
 
 // Spotify editorial playlist used as the absolute-emergency fallback when
@@ -197,9 +205,9 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     return admitted;
   };
 
-  // Pre-fetch the four signals in parallel — they're independent and each
+  // Pre-fetch all signals in parallel — they're independent and each
   // costs 1-9 API calls. Doing them upfront avoids per-pass round-trips.
-  const [longTermRes, mediumTermRes, shortTermRes, playlistScan] = await Promise.all([
+  const [longTermRes, mediumTermRes, shortTermRes, playlistScan, recapTracks] = await Promise.all([
     spotifyFetch<{ items: SpotifyTrack[] }>(
       "/me/top/tracks?time_range=long_term&limit=50"
     ).catch(() => ({ items: [] as SpotifyTrack[] })),
@@ -215,11 +223,16 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
       tracks: [] as SpotifyTrack[],
       albumIds: new Set<string>(),
     })),
+    // Spotify-generated recap playlists (Wrapped year-end "Your Top
+    // Songs YYYY," On Repeat, Repeat Rewind). Pre-deduped, ordered by
+    // recency (newer years first).
+    spotifyRecapTracks().catch(() => [] as SpotifyTrack[]),
   ]);
   const longTerm = longTermRes.items ?? [];
   const mediumTerm = mediumTermRes.items ?? [];
   const shortTerm = shortTermRes.items ?? [];
   const playlistFreqList = playlistScan.tracks;
+  const recapList = recapTracks;
   corroboratedAlbumIds = playlistScan.albumIds;
 
   // Per-signal position cursor: tracks how many positions from the source
@@ -227,7 +240,7 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   // covering only NEW positions — so if a high-rank long_term track was
   // already admitted via playlist (dedup'd inside admit), we don't waste
   // work re-checking it in pass 2.
-  const cursor = { long: 0, medium: 0, short: 0, playlist: 0 };
+  const cursor = { long: 0, medium: 0, short: 0, recap: 0, playlist: 0 };
 
   for (const quota of PASS_QUOTAS) {
     if (out.length >= TARGET) break;
@@ -240,13 +253,19 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     admit(shortTerm.slice(cursor.short, quota.short), "short_term");
     cursor.short = quota.short;
     if (out.length >= TARGET) break;
+    admit(recapList.slice(cursor.recap, quota.recap), "recap");
+    cursor.recap = quota.recap;
+    if (out.length >= TARGET) break;
     admit(playlistFreqList.slice(cursor.playlist, quota.playlist), "playlist");
     cursor.playlist = quota.playlist;
   }
 
-  // Drain any remaining cross-playlist entries we didn't reach in the
-  // pass schedule. All entries here are already ≥3-playlist songs, so
-  // they're still legitimate curation — just lower-ranked.
+  // Drain any remaining recap + cross-playlist entries we didn't reach
+  // in the pass schedule. Recap goes first (it's pure listening data),
+  // then playlist (curation).
+  if (out.length < TARGET && cursor.recap < recapList.length) {
+    admit(recapList.slice(cursor.recap), "recap");
+  }
   if (out.length < TARGET && cursor.playlist < playlistFreqList.length) {
     admit(playlistFreqList.slice(cursor.playlist), "playlist");
   }
@@ -281,6 +300,7 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
       medium_term: 0,
       recently_played: 0,
       long_term: 0,
+      recap: 0,
       saved_early: 0,
       genre_fill: 0,
       manual: 0,
@@ -395,6 +415,103 @@ async function crossPlaylistFrequency(): Promise<{
     .sort((a, b) => b.count - a.count || a.firstSeenOrder - b.firstSeenOrder)
     .map((e) => e.track);
   return { tracks, albumIds };
+}
+
+/** Spotify-generated personalized recap playlists. These are Spotify's
+ *  own record of what the user has actually played:
+ *    - "Your Top Songs YYYY"   Wrapped year-end (~100 tracks per year)
+ *    - "On Repeat"             current rotation (~30 tracks)
+ *    - "Repeat Rewind"         older favorites you've returned to (~30)
+ *
+ *  All are owned by `spotify`, auto-added to the user's library, and so
+ *  appear in /me/playlists. We page up to 4 pages (200 playlists) to
+ *  catch users with many followed playlists pushing recaps off page 1.
+ *
+ *  Returned flat-deduped, with newer Wrapped years first, then On Repeat,
+ *  then Repeat Rewind — the consumer order maps directly onto pass cursors.
+ *
+ *  Why this matters: /me/top/tracks caps at 50 per time-range, so a user
+ *  with deep listening history has hundreds of legitimate favorites the
+ *  top_tracks API can't surface. Wrapped 2024 alone is ~100 tracks of
+ *  hard-evidence favorites. This signal is what fills the pool past 82
+ *  for users whose top_tracks + playlist overlap heavily.
+ */
+const RECAP_NAME_RE =
+  /^(?:your\s+top\s+songs\s+\d{4}|top\s+songs\s+\d{4}|on\s+repeat|repeat\s+rewind|your\s+\d{4}\s+wrapped|wrapped\s+\d{4})$/i;
+
+function recapPriority(name: string): number {
+  // Lower = earlier in the returned list.
+  // Year-tagged recaps sort newest-first via (9999 - year). "On Repeat"
+  // (current rotation) comes before historical Wrapped. Repeat Rewind
+  // last because it's the noisiest of the three.
+  if (/^on\s+repeat$/i.test(name)) return 0;
+  const yearMatch = name.match(/(\d{4})/);
+  if (yearMatch) {
+    const year = parseInt(yearMatch[1], 10);
+    return 1000 + (9999 - year); // 2024 → 8975, 2023 → 8976, ...
+  }
+  if (/repeat\s+rewind/i.test(name)) return 20000;
+  return 30000;
+}
+
+async function spotifyRecapTracks(): Promise<SpotifyTrack[]> {
+  type ListPage = {
+    items: Array<{
+      id: string;
+      name: string;
+      owner: { id: string };
+    }>;
+    next: string | null;
+  };
+
+  const matches: Array<{ id: string; name: string }> = [];
+  let url: string | null = "/me/playlists?limit=50";
+  for (let page = 0; page < 4 && url; page++) {
+    try {
+      const path = url.startsWith("http")
+        ? url.replace(/^https?:\/\/api\.spotify\.com\/v1/, "")
+        : url;
+      const data: ListPage = await spotifyFetch<ListPage>(path);
+      for (const pl of data.items ?? []) {
+        if (!pl?.id || !pl?.name) continue;
+        if (pl.owner?.id !== "spotify") continue;
+        if (!RECAP_NAME_RE.test(pl.name)) continue;
+        matches.push({ id: pl.id, name: pl.name });
+      }
+      url = data.next;
+    } catch {
+      break;
+    }
+  }
+
+  // Order by recap priority so the cursor consumes most-relevant first.
+  matches.sort((a, b) => recapPriority(a.name) - recapPriority(b.name));
+
+  const out: SpotifyTrack[] = [];
+  const seenId = new Set<string>();
+  const fields =
+    "items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images))),next";
+
+  // Each recap is small (≤100 tracks for Wrapped, ≤30 for On Repeat).
+  // One page is enough; we don't follow `next`.
+  for (const pl of matches) {
+    try {
+      type Page = { items: Array<{ track: SpotifyTrack | null }> };
+      const data: Page = await spotifyFetch<Page>(
+        `/playlists/${pl.id}/tracks?limit=100&fields=${encodeURIComponent(fields)}`,
+      );
+      for (const item of data.items ?? []) {
+        const t = item.track;
+        if (!t?.id || seenId.has(t.id)) continue;
+        seenId.add(t.id);
+        out.push(t);
+      }
+    } catch {
+      // One missing recap playlist shouldn't poison the signal.
+      continue;
+    }
+  }
+  return out;
 }
 
 /** Free-text track search for the "add a song" UI. Returns top 10 hits. */
