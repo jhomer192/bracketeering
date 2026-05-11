@@ -45,8 +45,8 @@ const PENDING_KEY = "bracketeering.pending_group"; // stash full querystring acr
 const SOURCE_DOT: Record<PoolSource, string> = {
   playlist: "bg-yellow-400",
   recap: "bg-indigo-400",
-  long_term: "bg-purple-500",
-  medium_term: "bg-pink-400",
+  long_term: "bg-red-500",
+  medium_term: "bg-blue-500",
   short_term: "bg-orange-500",
   recently_played: "bg-amber-400",
   daylist: "bg-teal-400",
