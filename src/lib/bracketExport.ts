@@ -4,7 +4,7 @@
 // single-elimination bracket — standard seeded matchups (1v16, 8v9, ...)
 // where the higher-ranked seed always advances. The visual point of the
 // PNG is "this is what my bracket looked like": shareable, glanceable,
-// and obviously a Bracketeering artifact.
+// and obviously a Songrank artifact.
 //
 // Layout: 1080×1920 portrait (Instagram/Snap Stories aspect), same canvas
 // pattern + crossOrigin album art loading as cardExport.ts. Different
@@ -226,7 +226,7 @@ export async function renderBracket(opts: RenderBracketOpts): Promise<Blob> {
   ctx.fillStyle = "#71717a";
   ctx.font = "500 24px system-ui, -apple-system, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("Bracketeer yours →", W / 2, H - 60);
+  ctx.fillText("Rank yours →", W / 2, H - 60);
   ctx.fillStyle = "#52525b";
   ctx.font = "400 20px system-ui, -apple-system, sans-serif";
   ctx.fillText(opts.shareHost ?? "jhomer192.github.io/bracketeering", W / 2, H - 32);

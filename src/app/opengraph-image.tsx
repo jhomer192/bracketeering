@@ -5,7 +5,7 @@
 
 import { ImageResponse } from "next/og";
 
-export const alt = "Bracketeering — Vote your way to your real top 10";
+export const alt = "Songrank — Vote your way to your real top 10";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 // Required for `output: 'export'` — bake the OG card at build time, not on
@@ -30,7 +30,7 @@ export default async function OGImage() {
           fontFamily: "system-ui, -apple-system, sans-serif",
         }}
       >
-        {/* Brand mark: bracket-tree, scaled up */}
+        {/* Brand mark: three descending bars (top-N ranking), scaled up */}
         <svg
           width="96"
           height="96"
@@ -39,32 +39,9 @@ export default async function OGImage() {
           style={{ marginBottom: 32 }}
         >
           <rect width="64" height="64" rx="14" fill="#09090b" />
-          <g
-            stroke="#1db954"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M11 14h10" />
-            <path d="M11 24h10" />
-            <path d="M11 40h10" />
-            <path d="M11 50h10" />
-            <path d="M21 14v5h7" />
-            <path d="M21 24v-5h7" />
-            <path d="M21 40v5h7" />
-            <path d="M21 50v-5h7" />
-            <path d="M28 19h6" />
-            <path d="M28 45h6" />
-            <path d="M34 19v9h7" />
-            <path d="M34 45v-9h7" />
-          </g>
-          <circle cx="48" cy="32" r="5" fill="#1db954" />
-          <path
-            d="M41 32h2"
-            stroke="#1db954"
-            strokeWidth="3"
-            strokeLinecap="round"
-          />
+          <rect x="11" y="18" width="42" height="7" rx="3" fill="#1db954" />
+          <rect x="11" y="29" width="32" height="7" rx="3" fill="#1db954" />
+          <rect x="11" y="40" width="22" height="7" rx="3" fill="#1db954" />
         </svg>
 
         <div
@@ -76,7 +53,7 @@ export default async function OGImage() {
             marginBottom: 24,
           }}
         >
-          Bracketeering
+          Songrank
         </div>
 
         <div
@@ -88,7 +65,7 @@ export default async function OGImage() {
           }}
         >
           Vote &ldquo;this or that&rdquo; on 128 of your songs. Walk away with a
-          real top 10.
+          ranked top 10.
         </div>
 
         <div

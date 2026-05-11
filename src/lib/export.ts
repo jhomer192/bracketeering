@@ -27,7 +27,7 @@ export async function exportPlaylists(ranked: SpotifyTrack[]): Promise<ExportRes
 
   // Always resolve identity from the live token, never from cache. If a user
   // ever switched Spotify accounts mid-session and our callback's `/me` fetch
-  // happened to fail, the cached `bracketeering.spotify_user_id` is now from
+  // happened to fail, the cached spotify_user_id is now from
   // the WRONG account and POSTing to `/users/{wrongId}/playlists` 403s. The
   // live call costs one round-trip and removes a whole class of stale-state
   // bugs. Cache fallback only if the live call fails (offline, rate-limited).
@@ -53,8 +53,8 @@ export async function exportPlaylists(ranked: SpotifyTrack[]): Promise<ExportRes
   // Spotify's playlist creation + image upload happen serially per playlist,
   // but the two playlists run in parallel.
   const [p10, p25] = await Promise.all([
-    createPopulatedPlaylist(userId, "My Top 10 — Bracketeering", top10Tracks, top10Cover),
-    createPopulatedPlaylist(userId, "My Top 25 — Bracketeering", top25Tracks, top25Cover),
+    createPopulatedPlaylist(userId, "My Top 10 — Songrank", top10Tracks, top10Cover),
+    createPopulatedPlaylist(userId, "My Top 25 — Songrank", top25Tracks, top25Cover),
   ]);
 
   return { top10: p10, top25: p25 };
@@ -74,7 +74,7 @@ async function createPopulatedPlaylist(
       body: JSON.stringify({
         name,
         public: false,
-        description: "Built with Bracketeering — pairwise-vote your way to your real top 25.",
+        description: "Built with Songrank — pairwise-vote your way to your real top 25.",
       }),
     },
   );

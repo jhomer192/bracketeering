@@ -1,25 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
   <rect width="64" height="64" rx="14" fill="#09090b"/>
-  <!-- Tournament bracket: 4 → 2 → 1 collapse, the literal shape of what Bracketeering does. -->
-  <g stroke="#1db954" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-    <!-- Round 1: four matchup bars on the left -->
-    <path d="M11 14h10"/>
-    <path d="M11 24h10"/>
-    <path d="M11 40h10"/>
-    <path d="M11 50h10"/>
-    <!-- Round 1 → Round 2 connectors -->
-    <path d="M21 14v5h7"/>
-    <path d="M21 24v-5h7"/>
-    <path d="M21 40v5h7"/>
-    <path d="M21 50v-5h7"/>
-    <!-- Round 2: two semifinal bars -->
-    <path d="M28 19h6"/>
-    <path d="M28 45h6"/>
-    <!-- Round 2 → Final connectors -->
-    <path d="M34 19v9h7"/>
-    <path d="M34 45v-9h7"/>
-  </g>
-  <!-- Champion node — solid green dot -->
-  <circle cx="48" cy="32" r="5" fill="#1db954"/>
-  <path d="M41 32h2" stroke="#1db954" stroke-width="3" stroke-linecap="round"/>
+  <!-- Three descending bars — the universal shape of a top-N ranking. -->
+  <rect x="11" y="18" width="42" height="7" rx="3" fill="#1db954"/>
+  <rect x="11" y="29" width="32" height="7" rx="3" fill="#1db954"/>
+  <rect x="11" y="40" width="22" height="7" rx="3" fill="#1db954"/>
 </svg>

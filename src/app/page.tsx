@@ -38,9 +38,9 @@ export default function Home() {
           <div className="flex justify-center">
             <LogoMark size={56} />
           </div>
-          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">Bracketeering</h1>
+          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">Songrank</h1>
           <p className="text-zinc-400 text-base sm:text-lg leading-snug">
-            Vote &quot;this or that&quot; on 128 of your songs. Walk away with a real
+            Vote &quot;this or that&quot; on 128 of your songs. Walk away with a ranked
             top 10 — and a Spotify playlist that proves it.
           </p>
         </div>

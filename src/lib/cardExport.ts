@@ -94,7 +94,7 @@ export async function renderTierCard(opts: RenderCardOpts): Promise<Blob> {
   ctx.fillStyle = "#71717a";
   ctx.font = "500 26px system-ui, -apple-system, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("Bracketeer yours →", W / 2, H - 78);
+  ctx.fillText("Rank yours →", W / 2, H - 78);
   ctx.fillStyle = "#52525b";
   ctx.font = "400 22px system-ui, -apple-system, sans-serif";
   ctx.fillText(opts.shareHost ?? "jhomer192.github.io/bracketeering", W / 2, H - 42);

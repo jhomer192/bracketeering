@@ -126,9 +126,9 @@ export default function PredictPage() {
   async function shareScore() {
     if (!submitted) return;
     const text =
-      `I scored ${submitted.percent}% on a Bracketeering predict-my-top-10 ` +
+      `I scored ${submitted.percent}% on a Songrank predict-my-top-10 ` +
       `(${submitted.exact}/10 exact, ${submitted.pairs}/45 pair-order). ` +
-      `Bracketeer your own: ${window.location.origin}${basePath}/`;
+      `Rank your own: ${window.location.origin}${basePath}/`;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);

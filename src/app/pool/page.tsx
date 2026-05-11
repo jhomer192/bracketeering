@@ -803,7 +803,7 @@ async function shareOrCopy(url: string, title: string) {
   const nav = navigator as Nav;
   if (typeof nav.share === "function") {
     try {
-      await nav.share({ title: "Bracketeering", text: title, url });
+      await nav.share({ title: "Songrank", text: title, url });
       return;
     } catch {
       // user cancelled — fall through
@@ -986,7 +986,7 @@ function ShareButton({ kept }: { kept: PoolEntry[] }) {
     if (typeof nav.share === "function") {
       try {
         await nav.share({
-          title: "Bracketeering pool",
+          title: "Songrank pool",
           text: `Rank these ${kept.length} songs:`,
           url,
         });

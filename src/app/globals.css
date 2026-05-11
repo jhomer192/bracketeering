@@ -2,7 +2,7 @@
 
 /* ---------- Brand tokens ----------
  *
- * Bracketeering is dark-only by design — the compare flow and reveal page are
+ * Songrank is dark-only by design — the compare flow and reveal page are
  * heavy on album art, and a light theme washes that out. So `prefers-color-
  * scheme` is intentionally ignored; the color palette is locked to dark.
  *

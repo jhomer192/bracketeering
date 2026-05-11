@@ -21,7 +21,7 @@ export default function GlobalError({
     // No telemetry yet — but at least leave a trail in dev tools.
     if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
       // eslint-disable-next-line no-console
-      console.error("[Bracketeering] render error:", error);
+      console.error("[Songrank] render error:", error);
     }
   }, [error]);
 

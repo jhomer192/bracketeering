@@ -1,12 +1,17 @@
-# Bracketeering
+# Songrank
 
-Vote "this or that" on 128 of your songs. Walk away with a real top 10 — and Spotify playlists that prove it.
+Vote "this or that" on 128 of your songs. Walk away with a ranked top 10 — and Spotify playlists that prove it.
 
 **Live**: <https://jhomer192.github.io/bracketeering/>
 
+> The deploy path is still `/bracketeering` because each user's Spotify
+> dev app has the old redirect URI registered. Renaming the GitHub repo
+> would require every user to add a new redirect URI before next login —
+> sticky for now.
+
 ## How it works
 
-Bracketeering is a static SPA. There is no backend. The OAuth flow is
+Songrank is a static SPA. There is no backend. The OAuth flow is
 **Authorization Code with PKCE** — you paste your own Spotify Client ID
 once, and every Spotify call goes browser → `api.spotify.com` directly,
 authed with your own access token. Nothing about your account, your music,
@@ -14,7 +19,7 @@ or your keys ever leaves your browser.
 
 **Why BYO Client ID?** Spotify caps each developer app at 5 friends. So
 each user creates their own free dev app — 90-second one-time setup —
-and Bracketeering uses it. No shared cap.
+and Songrank uses it. No shared cap.
 
 ## What's working today
 
@@ -33,12 +38,17 @@ and Bracketeering uses it. No shared cap.
 - Per-tier shareable image cards — 1080×1920 PNG of any tier (Top 10/25/
   50/100/128) as a numbered list or dense mosaic
 - **Single-image bracket export** — 1080×1920 PNG of the top 16 (or top 8
-  for shallower pools) drawn as a tournament tree, with seeded matchups,
-  connector lines, and a champion badge
+  for shallower pools) drawn as a seeded bracket, with connector lines
+  and a champion badge. (Bracket-as-visualization, not bracket-as-algorithm
+  — the ranker uses binary insertion, not single-elim.)
 - **Predict-my-top-10** — share a `/predict/?t=…` link with a friend; they
   see your top 10 in shuffled order, drag to guess, get a score (0–100%
   blend of pair-order correctness and exact-rank hits). No Spotify auth
   required on the recipient side; metadata loads via Spotify oEmbed.
+- **30-sec audio previews** — resolved via iTunes Search API (Spotify's
+  `preview_url` field is mostly null since late 2024, and their iframe
+  embed has unfixable iOS gesture bugs). Plays through `<audio>`, cached
+  in localStorage.
 - Group brackets — 2-4 friends each contribute a slice of the pool; last
   person ranks the merged result
 
@@ -64,6 +74,7 @@ app can register multiple redirect URIs — add both.
 - Next.js 16 with `output: 'export'` (static SPA)
 - TypeScript, Tailwind v4
 - Spotify Web API via typed `fetch` wrappers in `src/lib/spotify.ts`
+- iTunes Search API for 30-sec previews (`src/lib/preview.ts`)
 - Web Crypto for PKCE (no node crypto, no shims)
 - localStorage for client_id + tokens, sessionStorage for the in-flight verifier
 

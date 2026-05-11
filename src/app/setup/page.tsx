@@ -45,9 +45,9 @@ export default function SetupPage() {
           </Link>
           <h1 className="text-2xl sm:text-3xl font-bold mt-2">One-time setup</h1>
           <p className="text-zinc-400 mt-2 leading-relaxed text-sm sm:text-base">
-            Spotify caps each developer app at 5 friends total. To use Bracketeering
+            Spotify caps each developer app at 5 friends total. To use Songrank
             without that cap, you make your own free Spotify dev app — takes about 90
-            seconds — and paste the Client ID below. Bracketeering runs entirely in
+            seconds — and paste the Client ID below. Songrank runs entirely in
             your browser; we never see your music data or your Spotify keys.
           </p>
         </div>
@@ -92,7 +92,7 @@ export default function SetupPage() {
               <p>Fill in the form:</p>
               <ul className="mt-2 space-y-1 text-zinc-400">
                 <li>
-                  <span className="text-zinc-300">App name:</span> anything (e.g. &quot;Bracketeering&quot;)
+                  <span className="text-zinc-300">App name:</span> anything (e.g. &quot;Songrank&quot;)
                 </li>
                 <li>
                   <span className="text-zinc-300">App description:</span> anything
@@ -116,7 +116,7 @@ export default function SetupPage() {
               <p>
                 On your new app&apos;s page → click <strong>Settings</strong> (top right) and
                 copy the <strong>Client ID</strong>. (You can ignore the client secret —
-                Bracketeering uses PKCE and doesn&apos;t need it.)
+                Songrank uses PKCE and doesn&apos;t need it.)
               </p>
             </div>
           </li>

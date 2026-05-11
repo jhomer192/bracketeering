@@ -407,8 +407,8 @@ export default function RevealPage() {
       });
       const result = await shareOrDownloadCard(
         blob,
-        `bracketeering-bracket-top${size}.png`,
-        `My Top ${size} bracket (Bracketeering)`,
+        `songrank-bracket-top${size}.png`,
+        `My Top ${size} bracket (Songrank)`,
       );
       setBracketStatus(result);
       setTimeout(() => setBracketStatus(null), 2400);
@@ -437,7 +437,7 @@ export default function RevealPage() {
     const nav = navigator as Nav;
     if (typeof nav.share === "function") {
       try {
-        await nav.share({ title: "Bracketeering", text, url });
+        await nav.share({ title: "Songrank", text, url });
         return;
       } catch {
         // user cancelled or share sheet errored — fall through to copy
@@ -474,8 +474,8 @@ export default function RevealPage() {
       });
       const result = await shareOrDownloadCard(
         blob,
-        `bracketeering-${tier}.png`,
-        `My ${TIER_LABELS[tier]} (Bracketeering)`,
+        `songrank-${tier}.png`,
+        `My ${TIER_LABELS[tier]} (Songrank)`,
       );
       setCardStatus(result);
       setTimeout(() => setCardStatus(null), 2400);
@@ -702,7 +702,7 @@ export default function RevealPage() {
             const list = visible
               .map((t, i) => `${i + 1}. ${t.name} — ${t.artists.map((a) => a.name).join(", ")}`)
               .join("\n");
-            const header = `My ${TIER_LABELS[tier]} (Bracketeering)`;
+            const header = `My ${TIER_LABELS[tier]} (Songrank)`;
             // Same reasoning as the card: derive from the live origin so a
             // forked deploy promotes itself, not the upstream.
             const shareUrl = `${window.location.origin}${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`;
@@ -747,7 +747,7 @@ export default function RevealPage() {
                 >
                   Spotify Developer Dashboard
                 </a>{" "}
-                and click your Bracketeering app.
+                and click your Songrank app.
               </li>
               <li>
                 Settings → User Management → <b>Add New User</b>.
@@ -807,7 +807,7 @@ export default function RevealPage() {
               className="block rounded-lg border border-emerald-700/60 bg-zinc-950 px-4 py-3 hover:bg-zinc-900 transition"
             >
               <div className="text-sm text-emerald-300">Open in Spotify →</div>
-              <div className="font-medium">My Top 10 — Bracketeering</div>
+              <div className="font-medium">My Top 10 — Songrank</div>
             </a>
             <a
               href={exported.top25.url}
@@ -816,7 +816,7 @@ export default function RevealPage() {
               className="block rounded-lg border border-emerald-700/60 bg-zinc-950 px-4 py-3 hover:bg-zinc-900 transition"
             >
               <div className="text-sm text-emerald-300">Open in Spotify →</div>
-              <div className="font-medium">My Top 25 — Bracketeering</div>
+              <div className="font-medium">My Top 25 — Songrank</div>
             </a>
           </div>
         ) : (

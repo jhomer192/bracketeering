@@ -14,16 +14,22 @@ const geistMono = Geist_Mono({
   display: "swap",
 });
 
+// Note: basePath / Pages URL is still `/bracketeering` because the repo
+// hasn't been renamed yet — the OAuth redirect URI registered in each
+// user's Spotify dev app points at /bracketeering/callback/. Renaming
+// the repo requires every existing user to add a new redirect URI on
+// their dev app, so the deploy path is sticky even though the brand
+// has changed.
 const SITE_URL = "https://jhomer192.github.io/bracketeering";
-const TITLE = "Bracketeering — Vote your way to your real top 10";
+const TITLE = "Songrank — Vote your way to your real top 10";
 const DESCRIPTION =
-  'Vote "this or that" on 128 of your songs. Walk away with a real top 10 — and a Spotify playlist that proves it.';
+  'Vote "this or that" on 128 of your songs. Walk away with a ranked top 10 — and a Spotify playlist that proves it.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: { default: TITLE, template: "%s · Bracketeering" },
+  title: { default: TITLE, template: "%s · Songrank" },
   description: DESCRIPTION,
-  applicationName: "Bracketeering",
+  applicationName: "Songrank",
   authors: [{ name: "Jack Homer" }],
   keywords: [
     "Spotify",
@@ -36,7 +42,7 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     url: SITE_URL,
-    siteName: "Bracketeering",
+    siteName: "Songrank",
     title: TITLE,
     description: DESCRIPTION,
   },
@@ -68,7 +74,7 @@ export default function RootLayout({
   return (
     // `data-theme="dark"` + `color-scheme: dark` keeps native form controls
     // (selects, scrollbars) in dark mode regardless of the user's OS pref.
-    // Bracketeering is intentionally dark-only — see globals.css comment.
+    // Songrank is intentionally dark-only — see globals.css comment.
     <html
       lang="en"
       data-theme="dark"
