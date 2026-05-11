@@ -32,8 +32,16 @@
 // small denominator. Top 5 is the only short_term cohort that requires
 // real listening volume to occupy.
 //
-// Emergency: editorial popular tracks (Spotify Today's Top Hits
-// playlist). Triggers when the four primary signals can't fill the pool.
+// Worse-case fallback: daylist. Spotify's hyper-personalized playlist
+// that refreshes ~6× a day based on time-of-day + listening patterns.
+// Not a top-tracks signal — it's a mood-of-the-moment cut — so we only
+// reach for it after the five primary signals have done their work.
+// Fills 20-50 tracks of personalized material before we'd otherwise fall
+// through to editorial Top Hits.
+//
+// Absolute emergency: editorial popular tracks (Spotify Today's Top Hits
+// playlist). Triggers when even daylist can't fill the pool — effectively
+// brand-new accounts with thin listening history.
 // (We don't fall back to the saved library — a save without any other
 // signal just means "I clicked the heart once," not "this is a favorite."
 // Anything genuinely loved enough to be saved AND played AND/OR curated
@@ -60,6 +68,7 @@ export type PoolSource =
   | "recently_played"
   | "long_term"
   | "recap"
+  | "daylist"
   | "saved_early"
   | "genre_fill"
   | "manual"
@@ -270,12 +279,24 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     admit(playlistFreqList.slice(cursor.playlist), "playlist");
   }
 
-  // Emergency: editorial popular fallback. Only fires when top_tracks +
-  // playlist signal couldn't fill the pool — effectively brand-new
-  // accounts with thin listening history. We deliberately skip the saved
-  // library here: a bare save is "I clicked the heart once," not a
-  // favorite, and surfacing arbitrary saved tracks dilutes the bracket
-  // with songs the user has neither played nor curated.
+  // Worse-case: daylist. Spotify's mood-of-the-moment personalized
+  // playlist. Personalization is real (vs. editorial Top Hits below)
+  // but the vibe shifts intraday — so we only consult it when the
+  // primary five signals didn't fill the pool.
+  if (out.length < TARGET) {
+    try {
+      const day = await daylistTracks();
+      admit(day, "daylist");
+    } catch {
+      // Daylist isn't available for all accounts — fall through.
+    }
+  }
+
+  // Absolute emergency: editorial popular fallback. Only fires when
+  // top_tracks + playlist + recap + daylist couldn't fill — effectively
+  // brand-new accounts. We deliberately skip the saved library: a bare
+  // save is "I clicked the heart once," not a favorite. Anything truly
+  // loved is already admitted via top_tracks/playlist/recap.
   if (out.length < TARGET) {
     try {
       const popular = await playlistTracks(TODAYS_TOP_HITS_PLAYLIST_ID);
@@ -301,6 +322,7 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
       recently_played: 0,
       long_term: 0,
       recap: 0,
+      daylist: 0,
       saved_early: 0,
       genre_fill: 0,
       manual: 0,
@@ -510,6 +532,67 @@ async function spotifyRecapTracks(): Promise<SpotifyTrack[]> {
       // One missing recap playlist shouldn't poison the signal.
       continue;
     }
+  }
+  return out;
+}
+
+/** Spotify daylist — the personalized "right-now vibe" playlist that
+ *  refreshes ~6× per day. Owned by `spotify`; name always starts with
+ *  "daylist" followed by mood/time descriptors (e.g. "daylist • indie
+ *  pop saturday morning"). One playlist per user, ~50 tracks per refresh.
+ *
+ *  Only used as a worse-case fallback in buildPool — the primary signals
+ *  (top_tracks + playlist freq + recap) own the pool when they can fill
+ *  it. Daylist's intraday-vibe shifting makes it less reliable for
+ *  "what's their top 128" than recap/top_tracks data.
+ *
+ *  Returns [] if no daylist is found, which is fine — buildPool will
+ *  fall through to the editorial absolute-emergency.
+ */
+async function daylistTracks(): Promise<SpotifyTrack[]> {
+  type ListPage = {
+    items: Array<{
+      id: string;
+      name: string;
+      owner: { id: string };
+    }>;
+    next: string | null;
+  };
+
+  let foundId: string | null = null;
+  let url: string | null = "/me/playlists?limit=50";
+  // Daylist is auto-added to the library, so it's almost always on page 1.
+  // We page up to 4× anyway in case of a heavily-followed account.
+  for (let page = 0; page < 4 && url && !foundId; page++) {
+    const path = url.startsWith("http")
+      ? url.replace(/^https?:\/\/api\.spotify\.com\/v1/, "")
+      : url;
+    const data: ListPage = await spotifyFetch<ListPage>(path);
+    for (const pl of data.items ?? []) {
+      if (!pl?.id || !pl?.name) continue;
+      if (pl.owner?.id !== "spotify") continue;
+      if (!/^daylist\b/i.test(pl.name)) continue;
+      foundId = pl.id;
+      break;
+    }
+    url = data.next;
+  }
+
+  if (!foundId) return [];
+
+  const fields =
+    "items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images)))";
+  type Page = { items: Array<{ track: SpotifyTrack | null }> };
+  const data: Page = await spotifyFetch<Page>(
+    `/playlists/${foundId}/tracks?limit=100&fields=${encodeURIComponent(fields)}`,
+  );
+  const seen = new Set<string>();
+  const out: SpotifyTrack[] = [];
+  for (const item of data.items ?? []) {
+    const t = item.track;
+    if (!t?.id || seen.has(t.id)) continue;
+    seen.add(t.id);
+    out.push(t);
   }
   return out;
 }
