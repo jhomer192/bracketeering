@@ -39,19 +39,52 @@ import {
 
 const PENDING_KEY = "bracketeering.pending_group"; // stash full querystring across login
 
+// One color per source — distinct enough to read on track tiles and in
+// the legend below the grid. Order matters in SOURCE_LEGEND_ORDER, not
+// here; this map is just lookups.
 const SOURCE_DOT: Record<PoolSource, string> = {
   playlist: "bg-yellow-400",
-  short_term: "bg-orange-500",
-  recently_played: "bg-orange-500",
-  medium_term: "bg-pink-400",
-  long_term: "bg-purple-500",
   recap: "bg-indigo-400",
+  long_term: "bg-purple-500",
+  medium_term: "bg-pink-400",
+  short_term: "bg-orange-500",
+  recently_played: "bg-amber-400",
   daylist: "bg-teal-400",
-  saved_early: "bg-purple-500",
+  saved_early: "bg-rose-400",
   genre_fill: "bg-zinc-500",
   manual: "bg-emerald-400",
   shared: "bg-sky-400",
 };
+
+const SOURCE_LABEL: Record<PoolSource, string> = {
+  playlist: "Playlists",
+  recap: "Wrapped & recaps",
+  long_term: "All-time top",
+  medium_term: "Last 6 months",
+  short_term: "Last 4 weeks",
+  recently_played: "Recently played",
+  daylist: "Daylist",
+  saved_early: "Saved",
+  genre_fill: "Editorial",
+  manual: "Added by you",
+  shared: "From your group",
+};
+
+// Legend display order — strongest signals first, fallbacks last. Sources
+// with count 0 are hidden so the strip stays tight.
+const SOURCE_LEGEND_ORDER: PoolSource[] = [
+  "playlist",
+  "recap",
+  "long_term",
+  "medium_term",
+  "short_term",
+  "recently_played",
+  "saved_early",
+  "daylist",
+  "genre_fill",
+  "shared",
+  "manual",
+];
 
 type Mode =
   | { kind: "solo" }
@@ -493,17 +526,11 @@ export default function PoolPage() {
               </p>
             ) : composition ? (
               <p className="text-[11px] text-zinc-500 leading-tight truncate">
-                {composition.shared ? `${composition.shared} shared` : (
-                  <>
-                    {composition.playlist ? `${composition.playlist} playlist · ` : ""}
-                    {composition.short_term + composition.recently_played} recent
-                    {composition.medium_term ? ` · ${composition.medium_term} 6mo` : ""}
-                    {" · "}{composition.long_term + composition.saved_early} all-time
-                    {composition.recap ? ` · ${composition.recap} recap` : ""}
-                    {composition.daylist ? ` · ${composition.daylist} daylist` : ""}
-                    {composition.genre_fill ? ` · ${composition.genre_fill} genre` : ""}
-                  </>
-                )}
+                {composition.shared
+                  ? `${composition.shared} shared`
+                  : `${pool.length} tracks · ${
+                      SOURCE_LEGEND_ORDER.filter((s) => composition[s] > 0).length
+                    } sources`}
               </p>
             ) : null}
           </div>
@@ -596,6 +623,32 @@ export default function PoolPage() {
             <span className="text-[11px] text-zinc-600 hidden sm:inline">
               {poolSize === 64 ? "quicker · ~100 votes" : "deeper · ~220 votes"}
             </span>
+          </div>
+        )}
+
+        {/* Source legend. Only meaningful when the pool was built locally
+            (solo/shared modes) — group mode pools blend across users and
+            the per-source counts become misleading. Sources with zero
+            tracks are hidden so the strip stays tight. */}
+        {mode.kind !== "group" && composition && pool.length > 0 && (
+          <div
+            className="px-1 mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-400"
+            aria-label="Pool source legend"
+          >
+            {SOURCE_LEGEND_ORDER.filter((s) => composition[s] > 0).map((s) => (
+              <span key={s} className="inline-flex items-center gap-1.5">
+                <span
+                  className={`w-2 h-2 rounded-full ${SOURCE_DOT[s]}`}
+                  aria-hidden
+                />
+                <span>
+                  {SOURCE_LABEL[s]}{" "}
+                  <span className="tabular-nums text-zinc-500">
+                    ({composition[s]})
+                  </span>
+                </span>
+              </span>
+            ))}
           </div>
         )}
 
