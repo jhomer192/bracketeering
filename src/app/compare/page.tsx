@@ -280,16 +280,21 @@ export default function ComparePage() {
         </div>
       </div>
 
-      {/* Spotify embed mini-player. Mounted once; the iframe API loads its
-          UI inside this div. Hidden until something is playing to avoid an
-          empty 80px strip eating into the card height on mobile. */}
+      {/* Spotify embed mini-player. The iframe API loads its UI inside the
+          inner host div. CRITICAL: the iframe must have real, non-zero
+          dimensions and be considered "visible" by the browser at the time
+          the user taps a track, or iOS Safari (and some Android browsers)
+          will reject the autoplay() call against a cross-origin iframe.
+          So we ALWAYS render the iframe at full size — we just translate
+          the wrapper off-screen when nothing is playing, instead of
+          collapsing height/opacity. Layout-visible, viewport-hidden. */}
       <div
-        className={`flex-none w-full max-w-5xl mx-auto px-3 sm:px-4 transition-[max-height,opacity,margin] duration-200 overflow-hidden ${
-          playingId ? "max-h-24 opacity-100 mb-1" : "max-h-0 opacity-0"
+        className={`flex-none w-full max-w-5xl mx-auto px-3 sm:px-4 mb-1 transition-transform duration-200 ${
+          playingId ? "translate-y-0" : "translate-y-[200%] pointer-events-none"
         }`}
         aria-hidden={!playingId}
       >
-        <div ref={playerHostRef} />
+        <div ref={playerHostRef} className="h-20" />
       </div>
 
       {/* Footer — keyboard hint on desktop, undo + start-over on all sizes. */}
