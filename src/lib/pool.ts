@@ -31,6 +31,15 @@
 // Absolute emergency: editorial popular tracks (Spotify Today's Top Hits
 // playlist). Triggers when the user has fewer total played+saved tracks
 // than the pool target — i.e. a brand-new account.
+//
+// Album diversity cap: at most 3 tracks per album across the entire pool.
+// Spotify's /me/top/tracks ranks every song from an album played
+// end-to-end, so a single beloved album can crack the top 50 with 10+
+// tracks and dominate the bracket. Worse, the album-bloat eats slots the
+// primary signals would have filled, forcing the saves-emergency to
+// fire and bring in arbitrary "this one is liked" tracks. Capping at 3
+// preserves the album's signal (it's clearly a favorite) while leaving
+// room for breadth, AND keeps the emergency dormant.
 
 import { spotifyFetch, type SpotifyTrack } from "./spotify";
 
@@ -88,6 +97,13 @@ const TODAYS_TOP_HITS_PLAYLIST_ID = "37i9dQZF1DXcBWIGoYBM5M";
 const PLAYLIST_FRACTION_THRESHOLD = 0.25;
 const MIN_PLAYLIST_APPEARANCES_FLOOR = 2;
 
+// Max tracks per album across the entire pool. 3 is enough to capture a
+// genuine album-favorite ("I love the singles AND a deep cut") without
+// letting one album occupy 10+ of 128 slots. Applies to every source —
+// long_term, medium_term, short_term, playlist, and saves — so the cap
+// can't be circumvented by an album dominating one signal.
+const ALBUM_CAP = 3;
+
 function playlistThreshold(playlistCount: number): number {
   return Math.max(
     MIN_PLAYLIST_APPEARANCES_FLOOR,
@@ -129,18 +145,27 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
   const TARGET = target;
   const seen = new Set<string>();      // by Spotify track ID
   const seenKey = new Set<string>();   // by normalized name+artist (cross-release dedup)
+  const albumCount = new Map<string, number>(); // by album ID, for ALBUM_CAP
   const out: PoolEntry[] = [];
 
-  // Admit every track in `tracks` (subject to dedup + TARGET ceiling),
-  // tagged with `source`. Caller controls volume by slicing `tracks` before
-  // passing. The dedup check makes this a no-op for tracks already in the
-  // pool from a stronger signal.
+  // Admit every track in `tracks` (subject to dedup + ALBUM_CAP + TARGET
+  // ceiling), tagged with `source`. Caller controls volume by slicing
+  // `tracks` before passing. The dedup check makes this a no-op for tracks
+  // already in the pool from a stronger signal. The album cap is global —
+  // tracks beyond the per-album quota are silently skipped regardless of
+  // signal strength.
   const admit = (tracks: SpotifyTrack[], source: PoolSource): void => {
     for (const t of tracks) {
       if (out.length >= TARGET) break;
       if (!t || !t.id || seen.has(t.id)) continue;
       const key = trackKey(t);
       if (seenKey.has(key)) continue;
+      const albumId = t.album?.id;
+      if (albumId) {
+        const count = albumCount.get(albumId) ?? 0;
+        if (count >= ALBUM_CAP) continue;
+        albumCount.set(albumId, count + 1);
+      }
       seen.add(t.id);
       seenKey.add(key);
       out.push({ ...t, source });
