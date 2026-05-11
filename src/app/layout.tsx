@@ -102,7 +102,21 @@ export default function RootLayout({
             // fires and previews silently no-op. Spotify deprecated
             // `preview_url` in late 2024, so this iframe is the only
             // path that actually plays audio.
-            "script-src 'self' 'unsafe-inline' https://open.spotify.com https://embed-cdn.spotifycdn.com",
+            //
+            // `'unsafe-eval'` is required by Spotify's iframe bundle — it
+            // uses `new Function()` / `eval` internally. Note CSP doesn't
+            // scope unsafe-eval per-origin; this opens it globally.
+            // Acceptable trade-off because:
+            //   - `'unsafe-inline'` is already required by Next.js static
+            //     export (no nonce available), so the strict-XSS property
+            //     of script-src was never available here in the first
+            //     place. Adding unsafe-eval doesn't widen the surface.
+            //   - We have no server-rendered injection point — every page
+            //     is statically prerendered from build-time data.
+            //   - The high-value defenses live in connect-src (no exfil
+            //     to evil.com) and img-src (no pixel beacons), which
+            //     remain strict.
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://open.spotify.com https://embed-cdn.spotifycdn.com",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' https://i.scdn.co https://mosaic.scdn.co data: blob:",
             "font-src 'self' data:",
