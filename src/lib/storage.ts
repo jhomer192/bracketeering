@@ -58,21 +58,21 @@ function dedupePool(pool: PoolEntry[]): PoolEntry[] {
 
 const KEYS = {
   /** Pool freshly built from Spotify — cached so revisits don't refetch. */
-  builtPool: "bracketeering.built_pool",
-  builtComposition: "bracketeering.built_composition",
-  kept: "bracketeering.kept_pool",
-  compare: "bracketeering.compare_state",
-  ranked: "bracketeering.ranked",
+  builtPool: "songrank.built_pool",
+  builtComposition: "songrank.built_composition",
+  kept: "songrank.kept_pool",
+  compare: "songrank.compare_state",
+  ranked: "songrank.ranked",
   /** User-curated final ordering on the reveal page. List of track IDs in
    *  order. When set, takes precedence over the default vote+tail stitch.
    *  Stored separately from `ranked` so re-running compare doesn't clobber
    *  manual reorders, and so the heal-on-load logic only touches `ranked`. */
-  fullOrdering: "bracketeering.full_ordering",
+  fullOrdering: "songrank.full_ordering",
   /** Shared-pool import queued before login. Comma-sep Spotify track IDs. */
-  pendingImport: "bracketeering.pending_import",
+  pendingImport: "songrank.pending_import",
   /** User's chosen pool size (64 or 128). Persists across sessions so the
    *  rebuild button doesn't silently re-flip back to 128. */
-  poolSize: "bracketeering.pool_size",
+  poolSize: "songrank.pool_size",
 } as const;
 
 export type PoolSize = 64 | 128;

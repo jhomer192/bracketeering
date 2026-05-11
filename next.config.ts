@@ -3,8 +3,8 @@ import type { NextConfig } from "next";
 // Static export → GitHub Pages. The browser-only PKCE flow doesn't need
 // a Node server, so we ship as a static SPA.
 //
-// basePath = "/bracketeering" because Pages serves at
-// https://jhomer192.github.io/bracketeering/. NEXT_PUBLIC_BASE_PATH lets
+// basePath = "/songrank" because Pages serves at
+// https://jhomer192.github.io/songrank/. NEXT_PUBLIC_BASE_PATH lets
 // `npm run dev` keep the empty base while CI builds set it.
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";

@@ -4,8 +4,8 @@
 // set), compute code_challenge = base64url(SHA-256(verifier)), and stash
 // the verifier in sessionStorage until the callback exchange.
 
-const VERIFIER_KEY = "bracketeering.pkce.verifier";
-const STATE_KEY = "bracketeering.pkce.state";
+const VERIFIER_KEY = "songrank.pkce.verifier";
+const STATE_KEY = "songrank.pkce.state";
 
 function base64UrlEncode(bytes: Uint8Array | ArrayBuffer): string {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);

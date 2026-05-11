@@ -2,12 +2,7 @@
 
 Vote "this or that" on 128 of your songs. Walk away with a ranked top 10 — and Spotify playlists that prove it.
 
-**Live**: <https://jhomer192.github.io/bracketeering/>
-
-> The deploy path is still `/bracketeering` because each user's Spotify
-> dev app has the old redirect URI registered. Renaming the GitHub repo
-> would require every user to add a new redirect URI before next login —
-> sticky for now.
+**Live**: <https://jhomer192.github.io/songrank/>
 
 ## How it works
 
@@ -66,7 +61,7 @@ npm run dev
 
 For local dev your redirect URI in your Spotify dev app should be
 `http://127.0.0.1:3000/callback/`. For prod (GitHub Pages) it's
-`https://jhomer192.github.io/bracketeering/callback/`. Each Spotify dev
+`https://jhomer192.github.io/songrank/callback/`. Each Spotify dev
 app can register multiple redirect URIs — add both.
 
 ## Tech
@@ -94,4 +89,4 @@ app can register multiple redirect URIs — add both.
 
 GitHub Actions (`.github/workflows/pages.yml`) builds on every push to
 `main` and deploys to GitHub Pages. The `NEXT_PUBLIC_BASE_PATH` env var
-is set to `/bracketeering` in CI so links resolve under the repo path.
+is set to `/songrank` in CI so links resolve under the repo path.

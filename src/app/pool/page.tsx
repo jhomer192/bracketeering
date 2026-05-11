@@ -37,7 +37,7 @@ import {
   type GroupParams,
 } from "@/lib/group";
 
-const PENDING_KEY = "bracketeering.pending_group"; // stash full querystring across login
+const PENDING_KEY = "songrank.pending_group"; // stash full querystring across login
 
 // One color per source — distinct enough to read on track tiles and in
 // the legend below the grid. Order matters in SOURCE_LEGEND_ORDER, not

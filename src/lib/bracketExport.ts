@@ -229,7 +229,7 @@ export async function renderBracket(opts: RenderBracketOpts): Promise<Blob> {
   ctx.fillText("Rank yours →", W / 2, H - 60);
   ctx.fillStyle = "#52525b";
   ctx.font = "400 20px system-ui, -apple-system, sans-serif";
-  ctx.fillText(opts.shareHost ?? "jhomer192.github.io/bracketeering", W / 2, H - 32);
+  ctx.fillText(opts.shareHost ?? "jhomer192.github.io/songrank", W / 2, H - 32);
   ctx.textAlign = "left";
 
   return new Promise<Blob>((resolve, reject) => {

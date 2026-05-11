@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import ClientStartup from "@/components/ClientStartup";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,13 +15,10 @@ const geistMono = Geist_Mono({
   display: "swap",
 });
 
-// Note: basePath / Pages URL is still `/bracketeering` because the repo
-// hasn't been renamed yet — the OAuth redirect URI registered in each
-// user's Spotify dev app points at /bracketeering/callback/. Renaming
-// the repo requires every existing user to add a new redirect URI on
-// their dev app, so the deploy path is sticky even though the brand
-// has changed.
-const SITE_URL = "https://jhomer192.github.io/bracketeering";
+// basePath / Pages URL is `/songrank`. Each user's Spotify dev app must
+// have `https://jhomer192.github.io/songrank/callback/` registered as a
+// redirect URI; see README for the one-time setup steps.
+const SITE_URL = "https://jhomer192.github.io/songrank";
 const TITLE = "Songrank — Vote your way to your real top 10";
 const DESCRIPTION =
   'Vote "this or that" on 128 of your songs. Walk away with a ranked top 10 — and a Spotify playlist that proves it.';
@@ -139,6 +137,7 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full flex flex-col bg-[var(--bg)] text-[var(--fg)]">
+        <ClientStartup />
         {children}
       </body>
     </html>

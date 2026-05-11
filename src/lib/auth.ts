@@ -19,14 +19,14 @@ const TOKEN_URL = "https://accounts.spotify.com/api/token";
 const AUTH_URL = "https://accounts.spotify.com/authorize";
 
 const KEYS = {
-  clientId: "bracketeering.client_id",
-  accessToken: "bracketeering.access_token",
-  refreshToken: "bracketeering.refresh_token",
-  expiresAt: "bracketeering.expires_at",
-  displayName: "bracketeering.display_name",
-  spotifyUserId: "bracketeering.spotify_user_id",
-  scope: "bracketeering.scope",
-  postAuthReturn: "bracketeering.post_auth_return",
+  clientId: "songrank.client_id",
+  accessToken: "songrank.access_token",
+  refreshToken: "songrank.refresh_token",
+  expiresAt: "songrank.expires_at",
+  displayName: "songrank.display_name",
+  spotifyUserId: "songrank.spotify_user_id",
+  scope: "songrank.scope",
+  postAuthReturn: "songrank.post_auth_return",
 } as const;
 
 // Scopes required to actually save the bracket as a Spotify playlist.

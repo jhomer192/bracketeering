@@ -27,7 +27,7 @@ type CacheEntry = { url: string | null; ts: number };
 // single `{artist} {track}` query missed iTunes-side metadata mismatches —
 // multi-artist tracks where Spotify lists "X, Y, Z" but iTunes lists "X
 // feat. Y", remix attributions that differ, etc.
-const CACHE_KEY = "bracketeering.preview.v3";
+const CACHE_KEY = "songrank.preview.v3";
 const POSITIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const NEGATIVE_TTL_MS = 24 * 60 * 60 * 1000;      // 1 day — re-check after a day
 

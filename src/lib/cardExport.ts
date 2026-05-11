@@ -97,7 +97,7 @@ export async function renderTierCard(opts: RenderCardOpts): Promise<Blob> {
   ctx.fillText("Rank yours →", W / 2, H - 78);
   ctx.fillStyle = "#52525b";
   ctx.font = "400 22px system-ui, -apple-system, sans-serif";
-  ctx.fillText(opts.shareHost ?? "jhomer192.github.io/bracketeering", W / 2, H - 42);
+  ctx.fillText(opts.shareHost ?? "jhomer192.github.io/songrank", W / 2, H - 42);
   ctx.textAlign = "left";
 
   return new Promise<Blob>((resolve, reject) => {
