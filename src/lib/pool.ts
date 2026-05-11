@@ -25,12 +25,13 @@
 // small denominator. Top 5 is the only short_term cohort that requires
 // real listening volume to occupy.
 //
-// Emergency: liked songs (saved library). Falls back here only if the
-// four primary signals don't fill the pool.
-//
-// Absolute emergency: editorial popular tracks (Spotify Today's Top Hits
-// playlist). Triggers when the user has fewer total played+saved tracks
-// than the pool target — i.e. a brand-new account.
+// Emergency: editorial popular tracks (Spotify Today's Top Hits
+// playlist). Triggers when the four primary signals can't fill the pool.
+// (We don't fall back to the saved library — a save without any other
+// signal just means "I clicked the heart once," not "this is a favorite."
+// Anything genuinely loved enough to be saved AND played AND/OR curated
+// onto a playlist will already be admitted via top_tracks or playlist
+// frequency. Pure-save signals are noise.)
 //
 // Album diversity cap, gated by playlist corroboration:
 //   - If the album has ANY track in ANY of the user's own playlists, cap
@@ -99,6 +100,9 @@ const TODAYS_TOP_HITS_PLAYLIST_ID = "37i9dQZF1DXcBWIGoYBM5M";
 const PLAYLIST_FRACTION_THRESHOLD = 0.25;
 const MIN_PLAYLIST_APPEARANCES_FLOOR = 2;
 
+// (Constant retained for back-compat with older cached pools whose
+// entries are tagged saved_early; no new admits use this source.)
+//
 // Per-album admit caps. Two tiers based on playlist corroboration:
 //   - CORROBORATED: at least one track from this album appears in one of
 //     the user's own playlists. They've explicitly curated something from
@@ -113,14 +117,6 @@ const MIN_PLAYLIST_APPEARANCES_FLOOR = 2;
 // the bracket, not its entire tracklist.
 const ALBUM_CAP_CORROBORATED = 3;
 const ALBUM_CAP_UNCORROBORATED = 1;
-
-// Hard ceiling on saved-library admits. Saves emergency exists for users
-// with thin top_tracks + playlist signal, but the saved library can be
-// years of impulse-saves that don't reflect current taste. Capping at 5
-// keeps the safety net (a totally empty pool still gets filled) without
-// letting a year-old "I should listen to this later" save outweigh real
-// curation.
-const SAVES_MAX_ADMITS = 5;
 
 function playlistThreshold(playlistCount: number): number {
   return Math.max(
@@ -255,44 +251,12 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     admit(playlistFreqList.slice(cursor.playlist), "playlist");
   }
 
-  // Emergency: liked songs. Strictly capped at SAVES_MAX_ADMITS to keep
-  // years-old impulse-saves from leaking into the bracket. Reads only the
-  // most recent saves (newest-first ordering of /me/tracks) so what does
-  // get admitted is at least current. If saves can't fill the gap, we
-  // fall through to the editorial absolute-emergency below rather than
-  // paging deeper into stale library state.
-  if (out.length < TARGET) {
-    let savesAdmitted = 0;
-    let offset = 0;
-    outer: while (
-      out.length < TARGET &&
-      savesAdmitted < SAVES_MAX_ADMITS &&
-      offset < 100 // 2 pages of 50, newest saves only
-    ) {
-      const page = await spotifyFetch<{
-        items: Array<{ track: SpotifyTrack | null }>;
-        next: string | null;
-      }>(`/me/tracks?limit=50&offset=${offset}`).catch(() => null);
-      if (!page) break;
-      const tracks = (page.items ?? [])
-        .map((i) => i.track)
-        .filter((t): t is SpotifyTrack => !!t && !!t.id);
-      // Walk one track at a time so we can stop exactly at the cap rather
-      // than overshooting (the alternative — admit a batch and check after
-      // — could admit 5+ in a single page).
-      for (const t of tracks) {
-        if (savesAdmitted >= SAVES_MAX_ADMITS) break outer;
-        if (out.length >= TARGET) break outer;
-        savesAdmitted += admit([t], "saved_early");
-      }
-      if (!page.next) break;
-      offset += 50;
-    }
-  }
-
-  // Absolute emergency: editorial popular fallback. Only fires when the
-  // user's combined played + saved + playlist signal can't fill the pool
-  // (effectively, brand-new accounts).
+  // Emergency: editorial popular fallback. Only fires when top_tracks +
+  // playlist signal couldn't fill the pool — effectively brand-new
+  // accounts with thin listening history. We deliberately skip the saved
+  // library here: a bare save is "I clicked the heart once," not a
+  // favorite, and surfacing arbitrary saved tracks dilutes the bracket
+  // with songs the user has neither played nor curated.
   if (out.length < TARGET) {
     try {
       const popular = await playlistTracks(TODAYS_TOP_HITS_PLAYLIST_ID);
