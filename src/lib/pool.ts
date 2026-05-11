@@ -19,13 +19,13 @@
 //                                  user with 4 playlists needs the song in
 //                                  2+, a user with 40 needs it in 10+.
 //
-// Pass 1: 20 / 20 / 5 / 20 / 20    = up to 85 admits
-// Pass 2: 40 / 40 / 5 / 50 / 40    = up to 175 cumulative
-// Pass 3: 50 / 50 / 5 / 100 / 80   = up to 285 cumulative (Spotify maxes
-//                                    top tracks at 50 per window, so 50 is
-//                                    the ceiling on long/medium; recap and
-//                                    playlist keep expanding)
-// Pass 4: drain remaining playlist cross-frequency entries
+// Pass 1: 20 / 20 / 5 / 20 / 20     = up to 85 admits
+// Pass 2: 40 / 40 / 5 / 50 / 40     = up to 175 cumulative
+// Pass 3: 100 / 100 / 5 / 100 / 80  = up to 385 cumulative (we paginate
+//                                     top_tracks past the documented 50
+//                                     limit via offset — Spotify returns
+//                                     ~99 per time_range in practice).
+// Pass 4: drain remaining recap + playlist cross-frequency entries
 //
 // short_term stops growing after pass 1 because the 4-week window is
 // noisy: a one-off "you have to hear this" play can crack top 50 of a
@@ -81,12 +81,14 @@ export type PoolEntry = SpotifyTrack & {
 const DEFAULT_TARGET = 128;
 
 // How many tracks to admit from each signal per pass. short_term is fixed
-// at 5 across all passes (the top-5-only rule); long/medium are capped at
-// Spotify's 50 max; playlist cross-frequency keeps growing until exhausted.
+// at 5 across all passes (the top-5-only rule); long/medium ceiling is
+// however many tracks Spotify actually returns when we page top_tracks
+// (~99 per window); recap + playlist cross-frequency keep growing until
+// exhausted.
 const PASS_QUOTAS = [
   { long: 20, medium: 20, short: 5, recap: 20, playlist: 20 },
   { long: 40, medium: 40, short: 5, recap: 50, playlist: 40 },
-  { long: 50, medium: 50, short: 5, recap: 100, playlist: 80 },
+  { long: 100, medium: 100, short: 5, recap: 100, playlist: 80 },
 ] as const;
 
 // Spotify editorial playlist used as the absolute-emergency fallback when
@@ -214,18 +216,13 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     return admitted;
   };
 
-  // Pre-fetch all signals in parallel — they're independent and each
-  // costs 1-9 API calls. Doing them upfront avoids per-pass round-trips.
-  const [longTermRes, mediumTermRes, shortTermRes, playlistScan, recapTracks] = await Promise.all([
-    spotifyFetch<{ items: SpotifyTrack[] }>(
-      "/me/top/tracks?time_range=long_term&limit=50"
-    ).catch(() => ({ items: [] as SpotifyTrack[] })),
-    spotifyFetch<{ items: SpotifyTrack[] }>(
-      "/me/top/tracks?time_range=medium_term&limit=50"
-    ).catch(() => ({ items: [] as SpotifyTrack[] })),
-    spotifyFetch<{ items: SpotifyTrack[] }>(
-      "/me/top/tracks?time_range=short_term&limit=50"
-    ).catch(() => ({ items: [] as SpotifyTrack[] })),
+  // Pre-fetch all signals in parallel — they're independent. Doing them
+  // upfront avoids per-pass round-trips. top_tracks is paginated past
+  // Spotify's documented limit=50 cap via offset (yields ~99 per window).
+  const [longTerm, mediumTerm, shortTerm, playlistScan, recapTracks] = await Promise.all([
+    fetchAllTopTracks("long_term").catch(() => [] as SpotifyTrack[]),
+    fetchAllTopTracks("medium_term").catch(() => [] as SpotifyTrack[]),
+    fetchAllTopTracks("short_term").catch(() => [] as SpotifyTrack[]),
     // playlist cross-frequency + album corroboration. Catch errors so a
     // 403 (missing scope) doesn't kill the whole build.
     crossPlaylistFrequency().catch(() => ({
@@ -237,9 +234,6 @@ export async function buildPool(target: number = DEFAULT_TARGET): Promise<{
     // recency (newer years first).
     spotifyRecapTracks().catch(() => [] as SpotifyTrack[]),
   ]);
-  const longTerm = longTermRes.items ?? [];
-  const mediumTerm = mediumTermRes.items ?? [];
-  const shortTerm = shortTermRes.items ?? [];
   const playlistFreqList = playlistScan.tracks;
   const recapList = recapTracks;
   corroboratedAlbumIds = playlistScan.albumIds;
@@ -437,6 +431,38 @@ async function crossPlaylistFrequency(): Promise<{
     .sort((a, b) => b.count - a.count || a.firstSeenOrder - b.firstSeenOrder)
     .map((e) => e.track);
   return { tracks, albumIds };
+}
+
+/** Paginate /me/top/tracks past Spotify's documented limit=50 cap.
+ *
+ *  The endpoint accepts an `offset` parameter and returns a `next` URL
+ *  for the following page. In practice Spotify returns up to ~99 items
+ *  per time_range before `next` goes null (the docs hand-wave the upper
+ *  bound; we follow `next` until it stops, capped defensively at 5 pages
+ *  so a misbehaving endpoint can't loop forever).
+ *
+ *  Why bother: limit=50 was leaving 40-49 legitimate top tracks per
+ *  time-window on the table for deep-listener accounts. That gap is
+ *  exactly the material that lets us fill a 128-pool without reaching
+ *  for fallbacks. */
+async function fetchAllTopTracks(
+  timeRange: "long_term" | "medium_term" | "short_term",
+): Promise<SpotifyTrack[]> {
+  type Page = { items: SpotifyTrack[]; next: string | null };
+  const out: SpotifyTrack[] = [];
+  let url: string | null =
+    `/me/top/tracks?time_range=${timeRange}&limit=50&offset=0`;
+  for (let i = 0; i < 5 && url; i++) {
+    const path = url.startsWith("http")
+      ? url.replace(/^https?:\/\/api\.spotify\.com\/v1/, "")
+      : url;
+    const data: Page = await spotifyFetch<Page>(path);
+    for (const t of data.items ?? []) {
+      if (t?.id) out.push(t);
+    }
+    url = data.next;
+  }
+  return out;
 }
 
 /** Spotify-generated personalized recap playlists. These are Spotify's
