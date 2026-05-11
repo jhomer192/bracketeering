@@ -21,11 +21,13 @@
 // second pass through a song is instant.
 
 type CacheEntry = { url: string | null; ts: number };
-// v2: v1 cached `null` on any non-ok HTTP response (rate limits, 5xx gateway
-// errors, etc.) for 30 days, which permanently disabled the play button for
-// any track unlucky enough to hit a transient iTunes hiccup. v2 only caches
-// null on a 200 OK "no results" response, and even then expires after 1 day.
-const CACHE_KEY = "bracketeering.preview.v2";
+// v3: same shape as v2, but bumped to flush v2 nulls that the new fallback
+// query (track-name-only retry) might now find. v2 was cleaner than v1 (only
+// cached null on 200-OK definitive misses, not on HTTP errors) but the
+// single `{artist} {track}` query missed iTunes-side metadata mismatches —
+// multi-artist tracks where Spotify lists "X, Y, Z" but iTunes lists "X
+// feat. Y", remix attributions that differ, etc.
+const CACHE_KEY = "bracketeering.preview.v3";
 const POSITIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const NEGATIVE_TTL_MS = 24 * 60 * 60 * 1000;      // 1 day — re-check after a day
 
@@ -65,44 +67,87 @@ function cacheSet(trackId: string, url: string | null) {
   saveCache(c);
 }
 
+/** Result of a preview lookup.
+ *  - `url`: iTunes preview URL, or null if not available.
+ *  - `definitive`: true when iTunes gave us a real answer (cached, or a 200
+ *    response we believed). false on transient errors (HTTP 4xx/5xx, network
+ *    blip). Callers should only treat `url === null` as "no preview" when
+ *    `definitive` is true — otherwise the button stays "still resolving"
+ *    and we'll retry next render.
+ */
+export type PreviewResolution = { url: string | null; definitive: boolean };
+
 // In-memory dedupe so two cards rendering the same matchup don't fire
 // two parallel iTunes requests for the same track.
-const inflight = new Map<string, Promise<string | null>>();
+const inflight = new Map<string, Promise<PreviewResolution>>();
 
-/** Resolve a Spotify track to an iTunes preview URL. Returns null if iTunes
- *  has no match. Cached in localStorage; deduped in memory. */
+/** Hit iTunes Search with a single query term. Returns the resolution shape
+ *  used by `resolvePreviewUrl`. `definitive` is false on transient errors so
+ *  the caller can choose to retry with a different term. */
+async function fetchItunesPreview(term: string): Promise<PreviewResolution> {
+  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(
+    term,
+  )}&entity=song&limit=1&media=music`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return { url: null, definitive: false };
+    const data = (await res.json()) as {
+      results?: Array<{ previewUrl?: string }>;
+    };
+    const previewUrl = data.results?.[0]?.previewUrl ?? null;
+    return { url: previewUrl, definitive: true };
+  } catch {
+    return { url: null, definitive: false };
+  }
+}
+
+/** Resolve a Spotify track to an iTunes preview URL. Returns `{ url, definitive }`:
+ *  - `definitive: true, url: string` — iTunes had a match.
+ *  - `definitive: true, url: null`  — iTunes definitively has no preview.
+ *  - `definitive: false, url: null` — transient failure; caller should retry later.
+ *  Cached in localStorage (definitive answers only); deduped in memory. */
 export async function resolvePreviewUrl(
   trackId: string,
   trackName: string,
   artistName: string,
-): Promise<string | null> {
+): Promise<PreviewResolution> {
   const cached = cacheGet(trackId);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return { url: cached, definitive: true };
   const existing = inflight.get(trackId);
   if (existing) return existing;
 
-  const p = (async (): Promise<string | null> => {
-    const term = encodeURIComponent(`${artistName} ${trackName}`);
-    const url = `https://itunes.apple.com/search?term=${term}&entity=song&limit=1&media=music`;
+  const p = (async (): Promise<PreviewResolution> => {
     try {
-      const res = await fetch(url);
-      if (!res.ok) {
-        // Transient HTTP failure (rate limit 403, gateway 5xx). Don't cache —
-        // retry next time. Caching null here is what greyed out everyone's
-        // play buttons in v1.
-        return null;
+      // First pass: "{artist} {track}" — best precision, avoids same-titled
+      // songs by other artists.
+      const primary = await fetchItunesPreview(`${artistName} ${trackName}`);
+      if (primary.definitive && primary.url) {
+        cacheSet(trackId, primary.url);
+        return primary;
       }
-      const data = (await res.json()) as {
-        results?: Array<{ previewUrl?: string }>;
-      };
-      const previewUrl = data.results?.[0]?.previewUrl ?? null;
-      // Only cache definitive answers: a 200 with results says iTunes
-      // searched and either has or doesn't have a preview for this track.
-      cacheSet(trackId, previewUrl);
-      return previewUrl;
-    } catch {
-      // Transient (network blip, DNS, CORS) — don't poison the cache; retry next time.
-      return null;
+      // Fallback: "{track}" alone. Catches metadata mismatches where Spotify
+      // lists e.g. "Artist A, Artist B" and iTunes lists "Artist A feat.
+      // Artist B" — the joint string fails the search, the track name alone
+      // hits. False matches (same title, different artist) are possible but
+      // rare in personal top-N libraries, and worse than no preview is no
+      // preview, so the tradeoff favors the fallback.
+      const fallback = await fetchItunesPreview(trackName);
+      if (fallback.definitive) {
+        // Cache only on a definitive second-pass answer. If primary was
+        // transient AND fallback was transient, leave the cache alone.
+        cacheSet(trackId, fallback.url);
+        return fallback;
+      }
+      // If primary was definitive-null and fallback was transient, the
+      // primary already told us iTunes searched and had nothing — cache
+      // that definitive miss. (Avoids 3 round-trips per render for tracks
+      // iTunes truly doesn't have.)
+      if (primary.definitive) {
+        cacheSet(trackId, null);
+        return primary;
+      }
+      // Both transient — don't poison the cache, return non-definitive.
+      return { url: null, definitive: false };
     } finally {
       inflight.delete(trackId);
     }

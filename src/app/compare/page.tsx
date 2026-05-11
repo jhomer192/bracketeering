@@ -118,15 +118,18 @@ export default function ComparePage() {
         return next;
       });
     };
-    resolvePreviewUrl(matchup.a.id, matchup.a.name, matchup.a.artists[0]?.name ?? "").then((u) => {
+    resolvePreviewUrl(matchup.a.id, matchup.a.name, matchup.a.artists[0]?.name ?? "").then((r) => {
       if (cancelled) return;
-      setPreviewA(u);
-      markResolved(matchup.a.id);
+      setPreviewA(r.url);
+      // Only mark resolved (and thus disable the button) on a definitive
+      // iTunes answer. Transient errors stay "still resolving" so a
+      // network blip doesn't permanently grey out the button.
+      if (r.definitive) markResolved(matchup.a.id);
     });
-    resolvePreviewUrl(matchup.b.id, matchup.b.name, matchup.b.artists[0]?.name ?? "").then((u) => {
+    resolvePreviewUrl(matchup.b.id, matchup.b.name, matchup.b.artists[0]?.name ?? "").then((r) => {
       if (cancelled) return;
-      setPreviewB(u);
-      markResolved(matchup.b.id);
+      setPreviewB(r.url);
+      if (r.definitive) markResolved(matchup.b.id);
     });
     return () => {
       cancelled = true;
